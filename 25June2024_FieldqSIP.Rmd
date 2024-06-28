@@ -1,0 +1,2530 @@
+---
+title: "Field qSIP R Code"
+author: "Kinsey Reed"
+date: "2024-05-21"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+  chunk_output_type: console
+---
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax
+for authoring HTML, PDF, and MS Word documents. For more details on
+using R Markdown see <http://rmarkdown.rstudio.com>.
+
+Packages
+
+```{r include = TRUE, warning = FALSE}
+#install.packages("svglite")
+#install.packages("hrbrthemes")
+#install.packages("viridis")
+#install.packages("mcr")
+#install.packages("SimplyAgree")
+#install.packages("ggridges")
+#install.packages("ggbreak")
+#install.packages("ggthemes")
+#install.packages("egg")
+#install.packages("ggtext")
+#install.packages("ggpattern")
+#install.packages("esquisse")
+library(scales)
+library(ggtext)
+library(rstatix)
+library(egg)
+library(cowplot)
+library(ggthemes)
+library(forcats)
+library(ggbreak)
+library(ggridges)
+library(svglite)
+library(hrbrthemes)
+library(viridis)
+library(reshape2)
+library(tidyverse)
+library(mcr)
+library(ggpubr)
+library(SimplyAgree)
+library(ggridges)
+library(ggpubr)
+library(vegan)
+library(doBy)
+library(esquisse)
+
+```
+
+1.  Internal functions: Calculating WAD (Weighted Average Density), EAF
+    (Excess atom fraction), mean, sd, se, and CI Note: Make sure you are
+    running the correct EAF eqns. In this example, the isotopes that was
+    used were 15N. You will also need to edit the columns number
+    according to your df. Once you get there, I have also noted where
+    you would need to make that change!
+
+```{r include = FALSE, warning = FALSE}
+
+# Weighted average density function = WAD.func
+WAD.func <- function(y, x){
+  WAD <- sum(x*(y/sum(y)))
+  WAD
+}
+
+
+# sample.vec <- This function is nested into the bootstrap WAD calculation (below)
+sample.vec <- function(x, ...){
+  x[sample(length(x), ...)]
+}
+
+
+# boot.WAD.func #
+boot.WAD.func <- function(X, vars=c("density.g.ml", "copies", "tube"), CI=0.90, draws=1000, size=NULL){
+  
+  # Create a dataframe RF only x, y, and rep: 
+  test.data <- data.frame(x=X[,vars[1]], y=X[,vars[2]], rep=factor(X[,vars[3]]))
+  
+  # Calculate observed weighted average density (WAD) for each rep:
+  obs.wads <- data.frame(matrix(nrow=length(levels(test.data$rep)), ncol=2))
+  names(obs.wads) <- c("wad", "rep")
+  for (r in 1:length(levels(test.data$rep))){
+    obs.wads$rep[r] <- levels(test.data$rep)[r]
+    obs.wads$wad[r] <- WAD.func(y=test.data$y[test.data$rep == levels(test.data$rep)[r]], x=test.data$x[test.data$rep == levels(test.data$rep)[r]])
+  }
+  obs.wads$rep <- factor(obs.wads$rep)
+  
+  # Bootstrapping: Calculate a bootstrap vector RF mean WADs across reps:
+  if (is.null(size)){
+    size <- dim(obs.wads)[1]
+  }
+  boot.wads <- numeric()
+  for (i in 1:draws){
+    boot.wads[i] <- mean(sample.vec(obs.wads$wad, size, replace=TRUE), na.rm=T)
+  }
+  boot.wads.CI <- quantile(boot.wads, probs=c((1-CI)/2, 1-((1-CI)/2)), na.rm=T)
+  reps.NAs <- obs.wads$rep[is.na(obs.wads$wad)]
+  if (length(reps.NAs) == 0){
+    message <- "none"
+  }
+  else  message <- paste("Warning: no occurrences in rep ", paste(reps.NAs, collapse=" & "), sep="")
+  
+  return(list(boot.wads=boot.wads, obs.wads=obs.wads, obs.wad.mean=mean(obs.wads$wad, na.rm=T), boot.wads.mean=mean(boot.wads, na.rm=T), boot.wads.median=median(boot.wads, na.rm=T), boot.wads.CI=boot.wads.CI, message=message))
+  
+}
+
+
+# These are used to calculate averages, SD, SE, and CI across your tubes/treatments
+
+summed <- function(x) return(mean(x)*length(x))
+
+
+trt.sum.fun <- function(x){
+  ave <- mean(x, na.rm = TRUE)
+  se <- (sd(x, na.rm = TRUE))/(sqrt(length(x)))
+  n <- length(x[!is.na(x)])
+  func.names <- list(ave = ave, se = se, n = n)
+  return(sapply(func.names, unlist))
+}
+
+
+trt.sum.fun.CI <- function(x)  return(c(mean(x, na.rm =TRUE), 
+                                        (sd(x, na.rm = TRUE))/(sqrt(length(x[!is.na(x)]))), 
+                                        length(x[!is.na(x)]), 
+                                        qnorm(0.95)*(sd(x, na.rm = TRUE)/(sqrt(length(x[!is.na(x)]))))
+)
+)
+
+avg.se.n.fun <- function(x)  return(c(mean(x, na.rm =FALSE), (sd(x, na.rm = FALSE))/(sqrt(length(x))), length(x[!is.na(x)])))
+se.sumfun <- function(x)  return(sd(x, na.rm = TRUE)/(sqrt(length(x))))
+sd.sumfun <- function(x)  return(sd(x, na.rm = TRUE))
+
+
+# 90% confidence interval equation
+# qnorm(0.95) # = 1.644854
+CI.sumfun <- function(x) return(qnorm(0.95)*(sd(x, na.rm = TRUE)/(sqrt(length(x)))))  # <- this calculates 90% C.I.
+# CI.95.sumfun <- function(x) return(1.96*(sd(x, na.rm = TRUE)/(sqrt(length(x)))))  # <- this calculates 95% C.I.
+len.sumfun <- function(x) return(length(x[!is.na(x)]))  
+
+#if want to remove NAs 
+median.na_rm <- function(x, ...){
+  median=median(x, na.rm=TRUE, ...)
+}
+
+sum.na_rm <- function(x, ...){
+  sum=sum(x, na.rm=TRUE, ...)
+}
+
+```
+
+2.  Import data using read.table or read.csv (depending on how you saved
+    it) \#### Note: Before you start, see example dataframe (df) on how
+    you need to format your data
+
+```{r include = FALSE, warning = FALSE}
+# Reading in df
+data_all_frac <- read.csv("Lv6-filt-frac.csv")
+dim(data_all_frac) #469 710
+tail(colnames(data_all_frac), 7) #check col location and names RF metadata; here have 6 cols
+
+
+# Making a metadata based on whRLe tube (experimental setup)
+metadata_tube <- unique(data_all_frac[,705:710])
+length(unique(data_all_frac$tube)) #42 tubes
+
+
+# Checking the data 
+# Looks at the dimension RF your dataframe
+# Take note RF columns your taxa start and end. 
+dim(data_all_frac) # 469 (rows) x 710 (columns)
+head(data_all_frac[, 1:3]) # Looks at the first three columns
+head(data_all_frac[, 702:710]) # Looks at the last 8 columns 
+
+str(unique(data_all_frac$tube)) #should be 42 tubes (14 unlabeled, 14 Lab Inc, 14 Field Inc)
+#Sample ID names: A = Valley site, O (as in orange) = Ridge site. 0 or 5 = time 0 (unlabelled) or day 5 (end RF Method/labelled). F = Field Method, L = Lab Method
+
+# Vector RF metadata names (Sample IDs, Treatment(s), density, qpcr copies number)
+# Make sure you type the name exactly as how it appeared in your df you read in (data_all_frac)
+data_meta_col_names<-c("index", "tube", "Site", "Method",
+                       "time_hrs", "density.g.ml", "copies")
+
+
+```
+
+3.  Calculate the relative abundance for each fractions \#### Note:
+    Every experiment will have different numbers RF taxa. I have 703
+    taxa. For this, the taxa are located on columns 2 - 704.
+
+```{r include = FALSE, warning = FALSE}
+# Add column for the sum abundance RF all taxa by fraction 
+# This will be used to calculate the relative abundance RF taxa in each fraction
+data_all_frac$sum.abundance<- rowSums(data_all_frac[, 2:704], na.rm = TRUE)
+
+
+# I like to look at my data and check to see if everything is calculated correctly
+dim(data_all_frac) # 469 x 711, you can see that the df is now larger
+head(data_all_frac[, 708:711]) # There is now a column for the sum abundance RF all taxa across row (by fractions)
+
+
+# We are making a new vector RF metadata names by adding sum.abundance to the data_meta_col_names
+# Not all our df requires the sum.abudance column, which is why we needed to create a new vector
+data_meta_col_names_sum <- c(data_meta_col_names, "sum.abundance")
+
+# Calcalate the relative abudance RF each taxa in each fraction:
+data.rel.fraction <- (1/data_all_frac$sum.abundance)*data_all_frac[,!names(data_all_frac) %in% data_meta_col_names_sum]
+
+table(is.na(data.rel.fraction))
+
+# Finds NA or missing data and replaces it with 0
+#I don't have any NA this time so skip
+#data.rel.fraction <- sapply(data.rel.fraction,  FUN = function(x) {
+#  x <- coalesce(x, 0)
+#})
+
+# Add metadata column to data.rel
+data.rel.fraction<-cbind(data_all_frac[, names(data_all_frac) %in% data_meta_col_names_sum], data.rel.fraction)
+
+
+# To double check if the relative abundance is calculated correct, 
+# Calculate the porportional abundance RF all taxa by fraction
+# Everything should equal to 1 
+data.rel.fraction$sum.abundance <- rowSums(data.rel.fraction[,!names(data.rel.fraction) %in% data_meta_col_names_sum], na.rm = TRUE)
+data.rel.fraction$sum.abundance[1:50] #should be all 1's. so we are good
+
+
+
+# Calculate number RF copies per uL, based on relative abundance and total number RF copies per uL
+# ncopies = is the copies number (from qpcr) * relative abundance (sequence-qiime data!)
+# The ncopies will be used to calculate your WAD 
+
+ncopies <- data.rel.fraction$copies*data.rel.fraction[,!names(data.rel.fraction) %in% data_meta_col_names_sum] 
+dim(ncopies) #469 703
+ncopies[1:4, c(1:8, 695:703)]
+
+
+# Add metadata columns to ncopies df
+ncopies <- cbind(data_all_frac[, names(data_all_frac) %in% data_meta_col_names], ncopies)
+dim(ncopies) #469 x 710 #This should be the same size our original 
+
+
+
+# Pivot the ncopies and data.rel df to long format instead RF wide by tube, trt.code, density, and qpcr.copies (copies)
+ncopies.long <- pivot_longer(ncopies,
+                             cols = c(names(ncopies)[!names(ncopies) %in% data_meta_col_names]), 
+                             names_to = "taxon",
+                             values_to = "ncopies") 
+
+
+dim(ncopies.long) #329707 x 9
+
+data.rel.long <- pivot_longer(data.rel.fraction, 
+                              cols = c(names(data.rel.fraction)[!names(data.rel.fraction) %in% data_meta_col_names_sum]),
+                              names_to = "taxon",
+                              values_to = "rel.abund.fract")
+
+
+dim(data.rel.long) #329707 x 10
+
+
+
+
+
+# Now merge data.rel.long and ncopies into one df
+# Do not change the data.rel.ncopies.merge df name. 
+# The WAD calculation in step 5 use this dataframe
+merge_col_names<-names(ncopies.long)[!names(ncopies.long) %in% "ncopies"]
+data.rel.ncopies.merge <- merge(data.rel.long, ncopies.long, by = merge_col_names)  
+
+
+# Save your dataframe: 
+# Optional: Create a new directory and save 
+# I like to keep my files ridgeanized and separate. 
+# For me, it is easier to find and I'm not overwhelmed by the appt RF .csv files 
+
+dir.create("rel.abund_ncopies")
+write.csv(data.rel.ncopies.merge, "rel.abund_ncopies/df.rel.ncopies.csv", row.names = FALSE)
+write.csv(ncopies, "rel.abund_ncopies/ncopies.csv", row.names = FALSE)
+write.csv(data.rel.fraction, "rel.abund_ncopies/rel.abundance.fraction.csv", row.names = FALSE)
+
+
+```
+
+4.  Calculate the relative abundance RF each ASV in tubes \#### This
+    step will be used for filtering Due to differences in sequence depth
+    between fractions, we will used the qpcr values to account for this
+
+```{r include = FALSE, warning = FALSE}
+
+# Calculate the ncopies sum RF each tube (sum all the ncopies per taxa by tube)
+ncopies.tube.sum <- summaryBy(ncopies ~ tube + Site + Method + time_hrs, data = ncopies.long, FUN = sum, fun.names = "tube.sum") 
+ncopies.taxa.sum <- summaryBy(ncopies ~ tube + Site + Method + time_hrs + taxon, data = ncopies.long, FUN = sum, fun.names = "taxa.sum") 
+
+# Merge df together
+ncopies.tube.taxa <- merge(ncopies.taxa.sum, ncopies.tube.sum, merge = c("tube", "Site" ,"Method", "time_hrs"))
+
+# Calculate the relative ncopies for each taxa in each tube 
+# The rel.ncopies value will be used to calculate the substrate assimilation later on (Step 12)
+
+ncopies.tube.taxa$rel.ncopies <- (ncopies.tube.taxa$ncopies.taxa.sum / ncopies.tube.taxa$ncopies.tube.sum)
+
+
+# Lets double check that our calculation is correct! 
+# The total sum RF the rel.ncopies RF each taxa in a fraction should equal the qPCR value RF that fraction  
+
+
+ck.ncopies.sum <- summaryBy(ncopies.taxa.sum ~ tube, data = ncopies.tube.taxa, FUN = sum)
+ck.qpcr.sum <- summaryBy(copies ~ tube, data = data_all_frac, FUN = sum)
+
+
+# These values should equal to one another
+#might have to remove all() or not
+if(all(ck.ncopies.sum$ncopies.taxa.sum.sum == ck.qpcr.sum$qpcr.copies.sum)){
+  print("Values are equal")
+} else {
+  print("not equal")
+}
+
+
+# Optional: I like to check to see if everything is calculated correctly
+# I subset a taxon and the total tube/IDs should equal your sample size
+# For this dataset, N = 42 
+
+dim(subset(ncopies.tube.taxa, taxon == "d__Archaea.p__Crenarchaeota.c__Nitrososphaeria.o__Nitrososphaerales.f__Nitrososphaeraceae.__")) #42 x 8
+
+write.csv(ncopies.tube.taxa, "rel.abund_ncopies/ncopies.tube.taxa.csv", row.names = FALSE)
+
+```
+
+5.  Calculating the WAD using the long-form fraction data Make sure you
+    ran all the functions in step 1 before you start This step will
+    calculate the weighted average density (WAD) RF each taxa that is
+    present in your data
+
+```{r include = FALSE, warning = FALSE}
+
+# Make an output file (This is a placehRLder for the WAD output and should have nothing in it) 
+wad.output<- data.frame(matrix(ncol = 3 + length(unique(data.rel.ncopies.merge)), nrow = 0))
+
+# Depending on your computer's processing power, this will take about 1 to 2 minute to run
+# The start.time and end.time is used to determine how long this set took! 
+start.time <- Sys.time()
+for (i in unique(data.rel.ncopies.merge$taxon)) {
+  # subset the dataframe
+  X <- data.rel.ncopies.merge[data.rel.ncopies.merge$taxon %in% i,]
+  X.boot.wad <- boot.WAD.func(X, vars=c("density.g.ml", "ncopies", "tube"), CI=0.90, draws=1, size=NULL)
+  dmc1.test.df <- as.data.frame(X.boot.wad$obs.wads)
+  dmc1.test.df.mean <- as.data.frame(X.boot.wad$obs.wad.mean)
+  dmc1.test.df.mean$rep <- "mean"
+  names(dmc1.test.df.mean) <- c("wad", "rep")
+  
+  dmc1.test.df.mean <- as.data.frame(X.boot.wad$obs.wad.mean)
+  dmc1.test.df.mean$rep <- "mean"
+  names(dmc1.test.df.mean) <- c("wad", "rep")
+  
+  dmc1.test.df.5CI <- as.data.frame(X.boot.wad$boot.wads.CI[1])
+  dmc1.test.df.5CI$rep <- "CI_lower"
+  names(dmc1.test.df.5CI) <- c("wad", "rep")
+  
+  dmc1.test.df.95CI <- as.data.frame(X.boot.wad$boot.wads.CI[2])
+  dmc1.test.df.95CI$rep <- "CI_upper"
+  names(dmc1.test.df.95CI) <- c("wad", "rep")
+  
+  dmc1.test <- rbind(dmc1.test.df.mean, dmc1.test.df.5CI, dmc1.test.df.95CI, dmc1.test.df)
+  rownames(dmc1.test) <- dmc1.test$rep
+  
+  step_result <- as.data.frame(t(dmc1.test))
+  step_result <- step_result[1,]
+  rownames(step_result) <- i
+  
+  wad.output <- rbind(wad.output,step_result)
+}
+
+end.time <- Sys.time()
+end.time - start.time # 12 sec
+str(wad.output)
+dim(wad.output) #703 x 45 
+
+
+# Convert output to numeric 
+wad.output.num <- as.data.frame(sapply(wad.output, as.numeric))
+dim(wad.output.num) #703 x 45
+rownames(wad.output.num) <- rownames(wad.output)
+wad.output.num[1:10, 1:10]
+
+# New column for taxa 
+wad.output.num$taxon <- rownames(wad.output.num)
+head(wad.output.num)
+dim(wad.output.num) #703 x 46
+
+# Save output 
+dir.create("WAD")
+write.csv(wad.output.num, "WAD/wad.output.csv", row.names = FALSE)
+wad.output.num <- read.csv("WAD/wad.output.csv")
+
+```
+
+6.  Filtering ASV to remove low abundance taxa
+
+I will be removing anything that is less than 0.0001. Low-abundance taxa
+are still relevant to my experimental design as long as they are still
+present in enough tubes.Depending on your data, you may need to go lower
+or higher. Again, because RF variability in the sequence depth, we will
+use the rel.ncopies value to filter This data is located on the
+ncopies.tube.taxa df Also this section will remove taxa that show up in
+less than 5 tubes per Site.
+
+I trialed many different types and degrees RF filtering for this data.
+For those results, please reach out. For the method-comparison analyses
+I am running this minimal filtering was deemed necessary. Most other
+qSIP experiments would do more intense filtering to remove messy data.
+
+```{r include = FALSE, warning = FALSE}
+
+filtered.ncopies.tube.taxa <- subset(ncopies.tube.taxa, rel.ncopies > 0.0001) 
+length(unique(filtered.ncopies.tube.taxa$taxon)) #692 -  We initially started with 703 taxa so only removed  11 
+
+# Double check to see if subsetting work
+min(filtered.ncopies.tube.taxa$rel.ncopies) #0.0001000203
+max(filtered.ncopies.tube.taxa$rel.ncopies) #0.1196862
+
+# String RF taxa names to inVLude in fractions
+filtered.taxa <- as.vector(filtered.ncopies.tube.taxa$taxon)
+
+# Filtered out taxa using the filtered.taxa list 
+wad.filtered.low <- subset(wad.output.num, taxon %in% filtered.taxa)
+length(unique(wad.filtered.low$taxon))  #692 should be same as above 
+
+#pull out unlabeled tubes
+#Separate by site since soils are so different
+wad.unlab.valley <- select(wad.filtered.low, matches(c("taxon","^A0[0-9]")))
+wad.unlab.ridge <- select(wad.filtered.low, matches(c("taxon","^O0[0-9]")))
+
+# Examine the n RF the unlabeled taxa 
+wad.unlab.valley$n_wad.valley <- rowSums(!is.na(wad.unlab.valley[2:8]))
+wad.unlab.ridge$n_wad.ridge <- rowSums(!is.na(wad.unlab.ridge[2:8]))
+
+#need to get them back together now
+wad.unlab.2filt <- full_join(wad.unlab.valley, wad.unlab.ridge, by = "taxon")
+#stats that end in .x is  valley and .y is ridge 
+
+
+# Let's remove taxa that shows up in less than 5 samples per Site.
+# This value is arbitrary and based on your experimental design
+# 2 sites x 7 reps = 14. Note that the Methods aren't inVLuded as a treatment here since don't have their own sep time 0.
+
+wad.unlab.tube.filt <- subset(wad.unlab.2filt, n_wad.valley >= 5 & n_wad.ridge >= 5) ##5 TUBES
+length(unique(wad.unlab.tube.filt$taxon)) #513 left (previously 692)
+
+# Double check to see if filtering work
+min(wad.unlab.tube.filt$n_wad.valley) #5
+min(wad.unlab.tube.filt$n_wad.ridge) #5
+
+taxa2filt <- as.vector(wad.unlab.tube.filt$taxon)  
+
+
+wad.unlab <- select(wad.filtered.low, matches(c("taxon","^[A-Z]0[0-9]")))
+length(unique(wad.unlab$taxon)) #original 692 check
+wad.unlab <- subset(wad.filtered.low, taxon %in% taxa2filt)
+length(unique(wad.unlab$taxon)) #now 513
+
+
+
+# Add the relative ncopies RF each taxon in the unlabeled samples
+# The rel_abundance.sum is the sum RF the relative abundance RF taxon A in tube A (summing all the fractions)
+# Lets subset the unlabeled samples from the ncopies.tube.taxa 
+rel.ncopies.unlab <- subset(ncopies.tube.taxa, Method == "None")
+
+# Lets average out the relative abundance RF each taxa 
+ave.ncopies.unlab <- summaryBy(rel.ncopies ~ taxon, data = rel.ncopies.unlab, 
+                               FUN = trt.sum.fun, fun.names = c("mean", "sd", "n"))
+
+
+# Merge the wad.unlab with ave.ncopies.unlab
+wad.unlab.abund <- merge(wad.unlab, ave.ncopies.unlab)
+
+
+# String RF filtered taxa names to subset fractions
+contingency.taxa <- as.vector(wad.unlab.abund$taxon)   
+
+
+# Optional: Determine the percentage RF community that was retained after filtering
+sum(wad.unlab.abund$rel.ncopies.ave) #98.6%
+
+```
+
+7.  Data organization and visualization
+
+```{r echo = FALSE, warning = FALSE}
+
+# Transpose the df. Remove  the first 3 columns: mean and CIs 
+wad.transposed <- as.data.frame(t(wad.output.num[, -c(1:3)]))
+
+# The taxon is located on row 43. Convert this to column name
+# Depending on your dataframe, this might be located in a different position ***
+# Also, valleyert the tube row into row.names
+colnames(wad.transposed) <- wad.transposed[43, ]
+wad.transposed$tube <- row.names(wad.transposed)
+
+# Add metadata to the df by merging the metadata df = metadata_tube with wad.transposed by tube ID
+wad.transposed <- merge(metadata_tube, wad.transposed, by = "tube")
+
+# Check the df to see if it looks correct. 
+view(wad.transposed[1:3, 1:10])
+dim(wad.transposed) # 469 x 709
+
+
+# Convert df into long format for filtering proposes 
+wad.long <- pivot_longer(wad.transposed, cols = c(names(wad.transposed[!names(wad.transposed) %in% data_meta_col_names])),
+                         names_to = "taxon", values_to = "WAD")
+
+# Convert WAD value from characters to numeric
+wad.long$WAD <- as.numeric(wad.long$WAD)
+
+# Filtered the wad.long df to keep desired taxa
+#I used 5 tubes to start. filtered for each site individually
+wad.long.filtered <- subset(wad.long, taxon %in% contingency.taxa)
+
+# Check to see if filtering work should be same as before
+length(unique(wad.long.filtered$taxon)) #513 now which is correct
+
+# Save 
+write.csv(wad.long, "WAD/new.wad.long.csv", row.names = FALSE)
+write.csv(wad.long.filtered, "WAD/new.wad.long.filtered.csv", row.names = FALSE)
+
+
+# Subset the df by tree x treatment 
+wad.RF <- subset(wad.long.filtered, Site == "Ridge" & Method %in% c("Field", "None"))
+wad.RL <- subset(wad.long.filtered, Site == "Ridge" & Method %in% c("Lab", "None"))
+wad.VF <- subset(wad.long.filtered, Site == "Valley" & Method %in% c("Field", "None"))
+wad.VL <- subset(wad.long.filtered, Site == "Valley" & Method %in% c("Lab", "None"))
+
+
+
+# Let's look at the mean WAD 
+aggregate(wad.RF$WAD, list(wad.RF$time_hrs), FUN = mean, na.rm = TRUE) 
+aggregate(wad.RL$WAD, list(wad.RL$time_hrs), FUN = mean, na.rm = TRUE) 
+aggregate(wad.VF$WAD, list(wad.VF$time_hrs), FUN = mean, na.rm = TRUE) 
+aggregate(wad.VL$WAD, list(wad.VL$time_hrs), FUN = mean, na.rm = TRUE) 
+
+
+
+# Lets plot the WAD . 
+# In this step, ideally you want the mean WAD RF each treatment to be similar. This won't always happen
+
+plot.wad.RF <- ggplot(wad.RF, aes(x = tube, y = WAD))+
+  geom_boxplot()+
+  geom_violin()+
+  geom_hline(yintercept= 1.703774)+
+  ggtitle("RF WAD")+
+  theme_classic()+
+  theme(legend.position = "top")
+plot.wad.RF
+#keep everything, though not super consistent
+
+
+plot.wad.RL <- ggplot(wad.RL, aes(x = tube, y = WAD))+
+  geom_boxplot()+
+  geom_violin()+
+  geom_hline(yintercept= 1.707330)+
+  ggtitle("RL WAD")+
+  theme_classic()+
+  theme(legend.position = "top")
+plot.wad.RL
+
+
+
+plot.wad.VF <- ggplot(wad.VF, aes(x = tube, y = WAD))+
+  geom_boxplot()+
+  geom_violin()+
+  geom_hline(yintercept= 1.706305)+
+  ggtitle("VF WAD")+
+  theme_classic()+
+  theme(legend.position = "top")
+plot.wad.VF
+
+
+plot.wad.VL <- ggplot(wad.VL, aes(x = tube, y = WAD))+
+  geom_boxplot()+
+  geom_violin()+
+  geom_hline(yintercept= 1.708841)+
+  ggtitle("VL WAD")+
+  theme_classic()+
+  theme(legend.position = "top")
+plot.wad.VL
+
+
+# Optional: Save plots
+plot.all.wad <- ggarrange(plot.wad.RF, plot.wad.RL, plot.wad.VF, plot.wad.VL, ncol = 2, nrow = 2)
+plot.all.wad
+ggsave("WAD/plot.all.wad.png")
+
+
+# Use the trt.sum.fun.CI function to calculate the WAD mean, std error, number RF reps, and CI
+# Depending on how you want to calculate the WAD shift, 
+# you can average all unlabeled WAD (regardless RF treatment) and use that value or 
+# use the unlabeled mean WAD to calculate shift from that treatment: 
+# So the unlabeled from Ridge is only use to calculate shift from Ridge group and 
+# Valley unlabeled is only use to calculate shift from Valley group
+
+# For this example, I am going to average all the WAD unlabeled together
+# To do so, I need to subset the unlabeled (time_hrs == 0) and row bind together 
+
+RF.WAD.unlab <- subset(wad.RF, time_hrs == "0")
+RL.WAD.unlab <- subset(wad.RL, time_hrs == "0")
+VF.WAD.unlab <- subset(wad.VF, time_hrs == "0")
+VL.WAD.unlab <- subset(wad.VL, time_hrs == "0")
+
+wad.unlab.all <- as.data.frame(rbind(RF.WAD.unlab, RL.WAD.unlab, VF.WAD.unlab, VL.WAD.unlab))
+
+
+# Removing the unlab from the df 
+RF.WAD.lab <- subset(wad.RF, time_hrs != "0")
+RL.WAD.lab <- subset(wad.RL, time_hrs != "0")
+VF.WAD.lab <- subset(wad.VF, time_hrs != "0")
+VL.WAD.lab <- subset(wad.VL, time_hrs != "0")
+
+
+# Lets calculate the WAD mean for each treatment
+wad.all.sum <- summaryBy(WAD ~ taxon, data = wad.unlab.all, FUN = trt.sum.fun.CI)
+wad.RF.sum <- summaryBy(WAD ~ taxon, data = RF.WAD.lab, FUN = trt.sum.fun.CI)
+wad.RL.sum <- summaryBy(WAD ~ taxon, data = RL.WAD.lab, FUN = trt.sum.fun.CI)
+wad.VF.sum <- summaryBy(WAD ~ taxon, data = VF.WAD.lab, FUN = trt.sum.fun.CI)
+wad.VL.sum <- summaryBy(WAD ~ taxon, data = VL.WAD.lab, FUN = trt.sum.fun.CI)
+
+
+# Rename the column header 
+# Do not change the 'mean_WAD' name. The EAF calculation uses this column name!  
+wad.sum.name <- c("taxon", "mean_WAD", "std_err", "n_reps", "CI")
+names(wad.RF.sum) <- wad.sum.name
+names(wad.RL.sum) <- wad.sum.name
+names(wad.VF.sum) <- wad.sum.name
+names(wad.VL.sum) <- wad.sum.name
+
+# Rename the unlabeled columns to distinguish from the labeled 
+# Do not change the mean_WAD_unlab column name. This is used in the EAF calculation function
+wad.unlab.name <- c("taxon", "mean_WAD_unlab", "std_err_unlab", "n_reps_unlab", "CI_unlab")
+names(wad.all.sum) <- wad.unlab.name
+
+
+# Lets merge the df wad.all.sum with each treatment WAD df 
+wad.RF.shift <- merge(wad.all.sum, wad.RF.sum, by = "taxon")
+wad.RL.shift <- merge(wad.all.sum, wad.RL.sum, by = "taxon")
+wad.VF.shift <- merge(wad.all.sum, wad.VF.sum, by = "taxon")
+wad.VL.shift <- merge(wad.all.sum, wad.VL.sum, by = "taxon")
+
+# Plot the WAD ordered by taxa 
+plot.wad.RF.taxa <- ggplot(wad.RF.shift) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD), ymin = mean_WAD - std_err, ymax = mean_WAD + std_err), width=.2) +
+  geom_point(aes(x = reorder(taxon, mean_WAD, mean), y = mean_WAD), size = 4, color = "black", shape = 21) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD_unlab), ymin = mean_WAD_unlab - std_err_unlab, ymax = mean_WAD_unlab + std_err_unlab, color = "Unlabeled"))+
+  geom_point(aes(x = reorder(taxon, mean_WAD_unlab), y = mean_WAD_unlab, fill = "Unlabeled"), size = 3, color = "black", shape = 23, alpha = 0.5) +
+  theme_classic2()+
+  theme(legend.position = "top")+
+  ggtitle("RF WAD")
+plot.wad.RF.taxa
+#note shift really small here, probably because had poor uptake RF 15N due to tillage and increases drainage/evaporation
+ggsave("WAD/wad.RF.taxa.png")
+
+plot.wad.RL.taxa <- ggplot(wad.RL.shift) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD), ymin = mean_WAD - std_err, ymax = mean_WAD + std_err), width=.2) +
+  geom_point(aes(x = reorder(taxon, mean_WAD, mean), y = mean_WAD), size = 4, color = "black", shape = 21) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD_unlab), ymin = mean_WAD_unlab - std_err_unlab, ymax = mean_WAD_unlab + std_err_unlab, color = "Unlabeled"))+
+  geom_point(aes(x = reorder(taxon, mean_WAD_unlab), y = mean_WAD_unlab, fill = "Unlabeled"), size = 3, color = "black", shape = 23, alpha = 0.5) +
+  theme_classic2()+
+  theme(legend.position = "top")+
+  ggtitle("RL WAD")
+plot.wad.RL.taxa
+#good shift
+ggsave("WAD/wad.RL.taxa.png")
+
+plot.wad.VF.taxa <- ggplot(wad.VF.shift) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD), ymin = mean_WAD - std_err, ymax = mean_WAD + std_err), width=.2) +
+  geom_point(aes(x = reorder(taxon, mean_WAD, mean), y = mean_WAD), size = 4, color = "black", shape = 21) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD_unlab), ymin = mean_WAD_unlab - std_err_unlab, ymax = mean_WAD_unlab + std_err_unlab, color = "Unlabeled"))+
+  geom_point(aes(x = reorder(taxon, mean_WAD_unlab), y = mean_WAD_unlab, fill = "Unlabeled"), size = 3, color = "black", shape = 23, alpha = 0.5) +
+  theme_classic2()+
+  theme(legend.position = "top")+
+  ggtitle("VF WAD")
+plot.wad.VF.taxa
+#pretty good shift
+ggsave("WAD/wad.VF.taxa.png")
+
+plot.wad.VL.taxa <- ggplot(wad.VL.shift) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD), ymin = mean_WAD - std_err, ymax = mean_WAD + std_err), width=.2) +
+  geom_point(aes(x = reorder(taxon, mean_WAD, mean), y = mean_WAD), size = 4, color = "black", shape = 21) +
+  geom_errorbar(aes(x = reorder(taxon, mean_WAD_unlab), ymin = mean_WAD_unlab - std_err_unlab, ymax = mean_WAD_unlab + std_err_unlab, color = "Unlabeled"))+
+  geom_point(aes(x = reorder(taxon, mean_WAD_unlab), y = mean_WAD_unlab, fill = "Unlabeled"), size = 3, color = "black", shape = 23, alpha = 0.5) +
+  theme_classic2()+
+  theme(legend.position = "top")+
+  ggtitle("VL WAD")
+plot.wad.VL.taxa
+#great
+ggsave("WAD/wad.VL.taxa.png")
+
+
+# Optional: Save plots 
+plot.all.wad.taxa <- ggarrange(plot.wad.RF.taxa, plot.wad.RL.taxa, plot.wad.VF.taxa, plot.wad.VL.taxa, ncol = 2, nrow = 2)
+plot.all.wad.taxa
+ggsave("WAD/new.plot.all.wad.taxa.png", plot.all.wad.taxa)
+
+```
+
+9.  Calculate WAD shift
+
+```{r echo = FALSE, warning = FALSE}
+wad.RF.shift <- mutate(wad.RF.shift, shift = mean_WAD - mean_WAD_unlab)
+wad.RL.shift <- mutate(wad.RL.shift, shift = mean_WAD - mean_WAD_unlab)
+wad.VF.shift <- mutate(wad.VF.shift, shift = mean_WAD - mean_WAD_unlab)
+wad.VL.shift <- mutate(wad.VL.shift, shift = mean_WAD - mean_WAD_unlab)
+
+# Order shift (small to large) and add observation and NAs count column 
+wad.RF.shift <- wad.RF.shift[order(wad.RF.shift$shift), ]
+wad.RF.shift$observation <- 1:nrow(wad.RF.shift)
+wad.RF.shift$nas <- rowSums(is.na(wad.RF.shift))
+
+wad.RL.shift <- wad.RL.shift[order(wad.RL.shift$shift), ]
+wad.RL.shift$observation <- 1:nrow(wad.RL.shift)
+wad.RL.shift$nas <- rowSums(is.na(wad.RL.shift))
+
+
+wad.VF.shift <- wad.VF.shift[order(wad.VF.shift$shift), ]
+wad.VF.shift$observation <- 1:nrow(wad.VF.shift)
+wad.VF.shift$nas <- rowSums(is.na(wad.VF.shift))
+
+
+wad.VL.shift <- wad.VL.shift[order(wad.VL.shift$shift), ]
+wad.VL.shift$observation <- 1:nrow(wad.VL.shift)
+wad.VL.shift$nas <- rowSums(is.na(wad.VL.shift))
+
+
+# Save 
+write.csv(wad.RF.shift, "WAD/new.wad.RF.shift.csv", row.names = FALSE)
+write.csv(wad.RL.shift, "WAD/new.wad.RL.shift.csv", row.names = FALSE)
+write.csv(wad.VF.shift, "WAD/new.wad.VF.shift.csv", row.names = FALSE)
+write.csv(wad.VL.shift, "WAD/new.wad.VL.shift.csv", row.names = FALSE)
+
+
+# qplot of averaged WAD 
+# First plot: Ideally, you are looking for a linear relationship between the unlab vs lab WAD. 
+# Also, you want most of your points to fall below the linear regression line
+# Second plot: Distribution of the shifts 
+# Third plot: A second a way of looking at the distribution of shift
+# Ideally, you want most of your observation to be above zero
+qplot(mean_WAD, mean_WAD_unlab, data = wad.RF.shift) +
+  geom_abline(reg=lm(mean_WAD_unlab~mean_WAD, data = wad.RF.shift))
+ggsave("WAD/qplot1_RF.png")
+qplot(shift, data = wad.RF.shift) 
+ggsave("WAD/qplot2shift_RF.png")
+qplot(observation, shift, data = wad.RF.shift)+
+  geom_abline(intercept = 0, slope = 0)
+ggsave("WAD/qplot3shift_RF.png")
+
+qplot(mean_WAD, mean_WAD_unlab, data = wad.RL.shift)+
+  geom_abline(reg=lm(mean_WAD_unlab~mean_WAD, data = wad.RL.shift))
+ggsave("WAD/qplot1_RL.png")
+qplot(shift, data = wad.RL.shift)
+ggsave("WAD/qplot2shift_RL.png")
+qplot(observation, shift, data = wad.RL.shift)+
+  geom_abline(intercept = 0, slope = 0)
+ggsave("WAD/qplot3shift_RL.png")
+
+qplot(mean_WAD, mean_WAD_unlab, data = wad.VF.shift)+
+  geom_abline(reg=lm(mean_WAD_unlab~mean_WAD, data = wad.VF.shift))
+ggsave("WAD/qplot1_VF.png")
+qplot(shift, data = wad.VF.shift)
+ggsave("WAD/qplot2shift_VF.png")
+qplot(observation, shift, data = wad.VF.shift)+
+  geom_abline(intercept = 0, slope = 0)
+ggsave("WAD/qplot3shift_VF.png")
+
+qplot(mean_WAD, mean_WAD_unlab, data = wad.VL.shift)+
+  geom_abline(reg=lm(mean_WAD_unlab~mean_WAD, data = wad.VL.shift))
+ggsave("WAD/qplot1_VL.png")
+qplot(shift, data = wad.VL.shift)
+ggsave("WAD/qplot2shift_VL.png")
+qplot(observation, shift, data = wad.VL.shift)+
+  geom_abline(intercept = 0, slope = 0)
+ggsave("WAD/qplot3shift_VL.png")
+
+
+# Calculate the average WAD and shift of each taxon by trt (tube replicates)
+# Merge WAD.XX df with the XX.unlab df by taxon 
+wad.RF.tube <- merge(wad.RF, wad.RF.shift, by = "taxon")
+wad.RL.tube <- merge(wad.RL, wad.RL.shift, by = "taxon")
+wad.VF.tube <- merge(wad.VF, wad.VF.shift, by = "taxon")
+wad.VL.tube <- merge(wad.VL, wad.VL.shift, by = "taxon")
+
+
+
+# Convert to wide format with tube ids as column headers 
+### without "values_fn = median" makes a list of the same value for each taxon
+
+wad.RF.wide <- pivot_wider(wad.RF.tube, id_cols = c("taxon", "mean_WAD_unlab", "std_err_unlab", "n_reps_unlab"),
+                           names_from = "tube", values_from = "WAD", values_fn = median)
+
+dim(wad.RF.wide) #513 x 18
+
+
+
+wad.RL.wide <- pivot_wider(wad.RL.tube, id_cols = c("taxon", "mean_WAD_unlab", "std_err_unlab", "n_reps_unlab"),
+                           names_from = "tube", values_from = "WAD", values_fn = median)
+
+wad.VF.wide <- pivot_wider(wad.VF.tube, id_cols = c("taxon", "mean_WAD_unlab", "std_err_unlab", "n_reps_unlab"),
+                           names_from = "tube", values_from = "WAD", values_fn = median)
+
+wad.VL.wide <- pivot_wider(wad.VL.tube, id_cols = c("taxon", "mean_WAD_unlab", "std_err_unlab", "n_reps_unlab"),
+                           names_from = "tube", values_from = "WAD", values_fn = median)
+
+
+
+#get rid of time 0 tubes
+
+wad.RF.B <- select(wad.RF.wide, contains(c("taxon", "unlab", "O5")))
+dim(wad.RF.B) #513 x 11 col, 7 reps 4 other
+wad.RL.B <- select(wad.RL.wide, contains(c("taxon", "unlab", "O5")))
+wad.VF.B <- select(wad.VF.wide, contains(c("taxon", "unlab", "A5")))
+wad.VL.B <- select(wad.VL.wide, contains(c("taxon", "unlab", "A5")))
+
+
+
+# Calculate the average WAD of each taxa by tube 
+# Row 5:11 is based on this dataset with 7 reps. Change the row values to suit your df 
+
+wad.RF.B$avetrt <- rowMeans(wad.RF.B[5:11], na.rm = TRUE)
+wad.RL.B$avetrt <- rowMeans(wad.RL.B[5:11], na.rm = TRUE)
+wad.VF.B$avetrt <- rowMeans(wad.VF.B[5:11], na.rm = TRUE)
+wad.VL.B$avetrt <- rowMeans(wad.VL.B[5:11], na.rm = TRUE)
+
+
+# Calculate the shift for each taxa 
+wad.RF.B <- mutate(wad.RF.B, shift = avetrt - mean_WAD_unlab)
+wad.RL.B <- mutate(wad.RL.B, shift = avetrt - mean_WAD_unlab)
+wad.VF.B <- mutate(wad.VF.B, shift = avetrt - mean_WAD_unlab)
+wad.VL.B <- mutate(wad.VL.B, shift = avetrt - mean_WAD_unlab)
+
+# Ordered df by shift (small to large) and add observation columns
+wad.RF.B <- wad.RF.B[order(wad.RF.B$shift), ]
+wad.RF.B$observation <- 1:nrow(wad.RF.B)
+wad.RL.B <- wad.RL.B[order(wad.RL.B$shift), ]
+wad.RL.B$observation <- 1:nrow(wad.RL.B)
+wad.VF.B <- wad.VF.B[order(wad.VF.B$shift), ]
+wad.VF.B$observation <- 1:nrow(wad.VF.B)
+wad.VL.B <- wad.VL.B[order(wad.VL.B$shift), ]
+wad.VL.B$observation <- 1:nrow(wad.VL.B)
+
+
+# Save
+write.csv(wad.RF.B, "WAD/new.wad.RF.B.csv", row.names = FALSE)
+write.csv(wad.RL.B, "WAD/new.wad.RL.B.csv", row.names = FALSE)
+write.csv(wad.VF.B, "WAD/new.wad.VF.B.csv", row.names = FALSE)
+write.csv(wad.VL.B, "WAD/new.wad.VL.B.csv", row.names = FALSE)
+
+
+
+
+```
+
+10. Bottom tube correction For this data set, I am going to use the
+    bottom 50 based on shift (low to high) This value is completely
+    arbitrary and based on how your data Convert the observation column
+    into numeric value
+
+```{r echo = FALSE, warning = FALSE}
+
+wad.RF.B$observation <- as.numeric(wad.RF.B$observation) 
+wad.RL.B$observation <- as.numeric(wad.RL.B$observation) 
+wad.VF.B$observation <- as.numeric(wad.VF.B$observation) 
+wad.VL.B$observation <- as.numeric(wad.VL.B$observation) 
+
+# Pull out the bottom 50 - This will be used to generate the offset value for each tube correction
+#also tested 25, 50, and 100. helped some but according to data the shifts stop being negative around row #17.
+wad.RF.B.bottom <- wad.RF.B[1:50, ]
+wad.RL.B.bottom <- wad.RL.B[1:50, ]
+wad.VF.B.bottom <- wad.VF.B[1:50, ]
+wad.VL.B.bottom <- wad.VL.B[1:50, ]
+
+
+# Calculating the difference between WAD of each taxa x tube
+# and the mean unlabeled WAD of each taxa 
+# To get the offset values for each tube, calculate the median of the difference
+# Convert to df 
+
+# The WAD of each tube is located on columns 5-8. This will vary with every experiment/dataset
+diff.RF.B <- wad.RF.B.bottom[, 5:11] - wad.RF.B.bottom$mean_WAD_unlab
+diff.RL.B <- wad.RL.B.bottom[, 5:11] - wad.RL.B.bottom$mean_WAD_unlab
+diff.VF.B <- wad.VF.B.bottom[, 5:11] - wad.VF.B.bottom$mean_WAD_unlab
+diff.VL.B <- wad.VL.B.bottom[, 5:11] - wad.VL.B.bottom$mean_WAD_unlab
+
+
+off.RF.B <- as.data.frame(rbind(apply(diff.RF.B, 2, median, na.rm = TRUE))) #2 indicates the function will be applied over the columns
+off.RL.B <- as.data.frame(rbind(apply(diff.RL.B, 2, median, na.rm = TRUE)))
+off.VF.B <- as.data.frame(rbind(apply(diff.VF.B, 2, median, na.rm = TRUE)))
+off.VL.B <- as.data.frame(rbind(apply(diff.VL.B, 2, median, na.rm = TRUE)))
+
+# Use the offset values to do the tube correction. This is just for the bottom 50. 
+
+#created a df with the offset values repeated so that it equals the same size as the WAD df
+#This way, I can subtract the two df from each other and not have to do each tube individually
+
+
+off.RF.B <- sapply(off.RF.B, rep.int, times = nrow(wad.RF.B))
+off.RL.B <- sapply(off.RL.B, rep.int, times = nrow(wad.RL.B))
+off.VF.B <- sapply(off.VF.B, rep.int, times = nrow(wad.VF.B))
+off.VL.B <- sapply(off.VL.B, rep.int, times = nrow(wad.VL.B))
+
+# Tube correction: Tube WAD of each taxa - tube offset value
+
+cor.RF.B <- wad.RF.B[, 5:11] - off.RF.B 
+cor.RL.B <- wad.RL.B[, 5:11] - off.RL.B 
+cor.VF.B <- wad.VF.B[, 5:11] - off.VF.B 
+cor.VL.B <- wad.VL.B[, 5:11] - off.VL.B 
+
+# Change the tube correction column names 
+colnames(cor.RF.B) <- paste("x", colnames(cor.RF.B), sep = "")
+colnames(cor.RL.B) <- paste("x", colnames(cor.RL.B), sep = "")
+colnames(cor.VF.B) <- paste("x", colnames(cor.VF.B), sep = "")
+colnames(cor.VL.B) <- paste("x", colnames(cor.VL.B), sep = "")
+
+
+# cbind the tube corrected column with the uncorrected tube 
+wad.RF.C <- cbind(wad.RF.B, cor.RF.B)
+wad.RL.C <- cbind(wad.RL.B, cor.RL.B)
+wad.VF.C <- cbind(wad.VF.B, cor.VF.B)
+wad.VL.C <- cbind(wad.VL.B, cor.VL.B)
+
+# Add summary for all corrected reps
+# This will use the last four columns, containing the corrected WAD
+dim(wad.RF.C) #513:21, so target columns will be be 15:21 (there are 7 reps)
+
+wad.RF.C$avetrt.c <- rowMeans(wad.RF.C[15:21], na.rm = TRUE)
+wad.RL.C$avetrt.c <- rowMeans(wad.RL.C[15:21], na.rm = TRUE)
+wad.VF.C$avetrt.c <- rowMeans(wad.VF.C[15:21], na.rm = TRUE)
+wad.VL.C$avetrt.c <- rowMeans(wad.VL.C[15:21], na.rm = TRUE)
+
+# Save: 
+write.csv(wad.RF.C, "WAD/corrected.wad.RF.C.csv", row.names = FALSE)
+write.csv(wad.RL.C, "WAD/corrected.wad.RL.C.csv", row.names = FALSE)
+write.csv(wad.VF.C, "WAD/corrected.wad.VF.C.csv", row.names = FALSE)
+write.csv(wad.VL.C, "WAD/corrected.wad.VL.C.csv", row.names = FALSE)
+
+# Plot the WAD of each tube vs mean_WAD_unlab. 
+# This is optional: But in this example, we will plot both the uncorrected vs the corrected. 
+# Ideally, the corrected WAD plot should be tighter than the uncorrected.
+# What you are looking: Reps to be on top of (or as close to) one another
+# Lower mean_WAD_unlab in comparison to your labeled WAD
+# You want to be able to see pattern similar to your DNA curves 
+
+plot.RF.C <- ggplot(wad.RF.C, aes(x = observation)) +
+  geom_line(aes(y = O51F, color = "O51F"), size = 0.25)+
+  geom_line(aes(y = O52F, color = "O52F"), size = 0.25)+
+  geom_line(aes(y = O53F, color = "O53F"), size = 0.25)+
+  geom_line(aes(y = O54F, color = "O54F"), size = 0.25)+
+  geom_line(aes(y = O55F, color = "O55F"), size = 0.25)+
+  geom_line(aes(y = O56F, color = "O56F"), size = 0.25)+
+  geom_line(aes(y = O57F, color = "O57F"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.5)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("original RF")
+plot.RF.C
+
+plot.RF.C.cor <- ggplot(wad.RF.C, aes(x = observation)) +
+  geom_line(aes(y = xO51F, color = "xO51F"), size = 0.25)+
+  geom_line(aes(y = xO52F, color = "xO52F"), size = 0.25)+
+  geom_line(aes(y = xO53F, color = "xO53F"), size = 0.25)+
+  geom_line(aes(y = xO54F, color = "xO54F"), size = 0.25)+
+  geom_line(aes(y = xO55F, color = "xO55F"), size = 0.25)+
+  geom_line(aes(y = xO56F, color = "xO56F"), size = 0.25)+
+  geom_line(aes(y = xO57F, color = "xO57F"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.5)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("corrected RF - 50")
+plot.RF.C.cor
+
+plot.RL.C <- ggplot(wad.RL.C, aes(x = observation)) +
+  geom_line(aes(y = O51L, color = "O51L"), size = 0.25)+
+  geom_line(aes(y = O52L, color = "O52L"), size = 0.25)+
+  geom_line(aes(y = O53L, color = "O53L"), size = 0.25)+
+  geom_line(aes(y = O54L, color = "O54L"), size = 0.25)+
+  geom_line(aes(y = O55L, color = "O55L"), size = 0.25)+
+  geom_line(aes(y = O56L, color = "O56L"), size = 0.25)+
+  geom_line(aes(y = O57L, color = "O57L"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.75)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("original RL")
+plot.RL.C
+
+plot.RL.C.cor <- ggplot(wad.RL.C, aes(x = observation)) +
+  geom_line(aes(y = xO51L, color = "xO51L"), size = 0.25)+
+  geom_line(aes(y = xO52L, color = "xO52L"), size = 0.25)+
+  geom_line(aes(y = xO53L, color = "xO53L"), size = 0.25)+
+  geom_line(aes(y = xO54L, color = "xO54L"), size = 0.25)+
+  geom_line(aes(y = xO55L, color = "xO55L"), size = 0.25)+
+  geom_line(aes(y = xO56L, color = "xO56L"), size = 0.25)+
+  geom_line(aes(y = xO57L, color = "xO57L"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.75)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("corrected RL - 50")
+
+##O51L is strange
+
+plot.VF.C <- ggplot(wad.VF.C, aes(x = observation)) +
+  geom_line(aes(y = A51F, color = "A51F"), size = 0.25)+
+  geom_line(aes(y = A52F, color = "A52F"), size = 0.25)+
+  geom_line(aes(y = A53F, color = "A53F"), size = 0.25)+
+  geom_line(aes(y = A54F, color = "A54F"), size = 0.25)+
+  geom_line(aes(y = A55F, color = "A55F"), size = 0.25)+
+  geom_line(aes(y = A56F, color = "A56F"), size = 0.25)+
+  geom_line(aes(y = A57F, color = "A57F"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.75)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("original VF")
+
+
+plot.VF.C.cor <- ggplot(wad.VF.C, aes(x = observation)) +
+  geom_line(aes(y = xA51F, color = "xA51F"), size = 0.25)+
+  geom_line(aes(y = xA52F, color = "xA52F"), size = 0.25)+
+  geom_line(aes(y = xA53F, color = "xA53F"), size = 0.25)+
+  geom_line(aes(y = xA54F, color = "xA54F"), size = 0.25)+
+  geom_line(aes(y = xA55F, color = "xA55F"), size = 0.25)+
+  geom_line(aes(y = xA56F, color = "xA56F"), size = 0.25)+
+  geom_line(aes(y = xA57F, color = "xA57F"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.75)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("corrected VF - 50")
+
+
+plot.VL.C <- ggplot(wad.VL.C, aes(x = observation)) +
+  geom_line(aes(y = A51L, color = "A51L"), size = 0.25)+
+  geom_line(aes(y = A52L, color = "A52L"), size = 0.25)+
+  geom_line(aes(y = A53L, color = "A53L"), size = 0.25)+
+  geom_line(aes(y = A54L, color = "A54L"), size = 0.25)+
+  geom_line(aes(y = A55L, color = "A55L"), size = 0.25)+
+  geom_line(aes(y = A56L, color = "A56L"), size = 0.25)+
+  geom_line(aes(y = A57L, color = "A57L"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.75)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("original VL")
+
+
+plot.VL.C.cor <- ggplot(wad.VL.C, aes(x = observation)) +
+  geom_line(aes(y = xA51L, color = "xA51L"), size = 0.25)+
+  geom_line(aes(y = xA52L, color = "xA52L"), size = 0.25)+
+  geom_line(aes(y = xA53L, color = "xA53L"), size = 0.25)+
+  geom_line(aes(y = xA54L, color = "xA54L"), size = 0.25)+
+  geom_line(aes(y = xA55L, color = "xA55L"), size = 0.25)+
+  geom_line(aes(y = xA56L, color = "xA56L"), size = 0.25)+
+  geom_line(aes(y = xA57L, color = "xA57L"), size = 0.25)+
+  geom_line(aes(y = mean_WAD_unlab), linetype = "dashed", size = 0.75)+
+  theme_classic2()+
+  theme(legend.position = "top") + 
+  ylab("WAD")+
+  ggtitle("corrected C-50")
+
+
+
+
+# Optional: Save plot 
+plot.RF.comp <- ggarrange(plot.RF.C, plot.RF.C.cor, nrow = 2, ncol = 1)
+plot.RF.comp
+plot.RL.comp <- ggarrange(plot.RL.C, plot.RL.C.cor, nrow = 2, ncol = 1)
+plot.RL.comp
+plot.VF.comp <- ggarrange(plot.VF.C, plot.VF.C.cor, nrow = 2, ncol = 1)
+plot.VF.comp
+plot.VL.comp <- ggarrange(plot.VL.C, plot.VL.C.cor, nrow = 2, ncol = 1)
+plot.VL.comp
+
+
+ggsave("WAD/plot.RF.comp.50.png", plot.RF.comp)
+ggsave("WAD/plot.RL.comp.50.png", plot.RL.comp)
+ggsave("WAD/plot.VF.comp.50.png", plot.VF.comp)
+ggsave("WAD/plot.VL.comp.50.png", plot.VL.comp)
+
+
+```
+
+11. Calculating EAF values The columns that you need for the eaf
+    function: mean_WAD_unlab, and corrected tube WAD (change column
+    number to match yours in the eaf function) Make sure you grab the
+    right eqn based on the isotopes you used!
+
+```{r echo = FALSE, warning = FALSE}
+
+eaf_eqn <-function (df){
+  df.func <- df  
+  # Gi = Calculating the GC content in taxon i   
+  df.func$GC <- (1/0.083506) * (df.func$mean_WAD_unlab - 1.646057)
+  # M. Light i = observed mol wt of the DNA fragment containing the 16S RNA gene for taxon i in the unlab treatment (natural abundance) (g*mol-1)
+  df.func$MW_unlabeled <- (0.496 * df.func$GC) + 307.691
+  # M. Heavy Max i = Theoretical mol wt of the DNA fragment containing the 16S RNA gene for taxon i assuming maximum labeling by the heavy isotopes (g * mol-1)
+  df.func$MW_max<- (0.5024851 * df.func$GC) + 3.517396 + df.func$MW_unlabeled
+  #0.5 changed for 15N... is it supposed to be negative? Chansos had a - in front of the C/Ovalue
+  
+  # Get the difference of the labeled and unlabeled WAD 
+  # Note: df will vary with each experiment. the first df is the tube corrected columns! 
+  # The second df is the mean_WAD_unlab
+  df.diff <- as.data.frame(sapply (df[,15:21], function (x) x - df[, 2]))
+  # Change the column names of the diff columns 
+  colnames(df.diff) <- paste(colnames(df)[c(15:21)], "diff", sep = "_")
+  
+  # M. Lab i = Observed mol wt of the DNA fragment containing the 16S RNA gene for taxon i in the labeled treatment (g * mol−1)
+  # This is calculating the MW_labled = ((WAD_Differences/WAD_unlabeled) + 1) * MW_unlabled 
+  df.MW_lab <- as.data.frame(sapply(df.diff, function(x) (((x/df.func$mean_WAD_unlab) + 1) * df.func$MW_unlabeled)))
+  # Change the column names of MW_labeled columns 
+  colnames(df.MW_lab) <- paste(colnames(df)[c(15:21)], "MW", sep = "_")
+  
+  # A. carbon i = Atom fraction excess of 15N in the labeled vs unlabeled treatment for taxon i (unitness)
+  df.eaf <- as.data.frame(sapply(df.MW_lab, function(x) ((x - df.func$MW_unlabeled)/(df.func$MW_max - df.func$MW_unlabeled)) * (1 - 0.003663004)))
+  # Change the column names of the EAF columns 
+  colnames(df.eaf) <- paste(colnames(df)[c(15:21)], "EAF", sep = "_")
+  
+  # Column bind all the dataframes into one output 
+  df.out <- cbind(df.func, df.diff, df.MW_lab, df.eaf)
+  # Mean EAF 
+  df.out$mean_eaf <- rowMeans(df.eaf, na.rm = TRUE)
+  
+  ## Each calculation are based on functions that should already be ran.
+  # Get the number of treatment tubes each taxon in obs in 
+  df.out$n_trt_tubes <- apply(df.eaf, 1, len.sumfun)
+  # Standard deviation of EAF
+  df.out$sd_eaf <- apply(df.eaf, 1, sd.sumfun)
+  # Standard error of EAF
+  df.out$se_eaf <- apply(df.eaf, 1, se.sumfun)
+  # Calculate the 90% confidence interbal of EAF
+  df.out$CI90_eaf <-apply(df.eaf, 1, CI.sumfun)
+  
+  df.out
+}
+
+# EAF calculation 
+eaf.RF.C <- eaf_eqn(wad.RF.C)
+eaf.RL.C <- eaf_eqn(wad.RL.C)
+eaf.VF.C <- eaf_eqn(wad.VF.C)
+eaf.VL.C <- eaf_eqn(wad.VL.C)
+
+
+# Plot the EAF 
+
+Plot.EAF.RF.C <- ggplot(eaf.RF.C, aes(x = reorder(taxon, mean_eaf, mean), y = mean_eaf, color = n_reps_unlab)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_eaf - se_eaf, ymax = mean_eaf + se_eaf)) + 
+  geom_hline(yintercept = 0) + 
+  theme_classic2() + 
+  ggtitle("RF EAF")
+Plot.EAF.RF.C
+
+Plot.EAF.RL.C <- ggplot(eaf.RL.C, aes(x = reorder(taxon, mean_eaf, mean), y = mean_eaf, color = n_reps_unlab)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_eaf - se_eaf, ymax = mean_eaf + se_eaf)) + 
+  geom_hline(yintercept = 0) + 
+  theme_classic2() + 
+  ggtitle("RL EAF")
+Plot.EAF.RL.C
+
+Plot.EAF.VF.C <- ggplot(eaf.VF.C, aes(x = reorder(taxon, mean_eaf, mean), y = mean_eaf, color = n_reps_unlab)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_eaf - se_eaf, ymax = mean_eaf + se_eaf)) + 
+  geom_hline(yintercept = 0) + 
+  theme_classic2() + 
+  ggtitle("VF EAF")
+Plot.EAF.VF.C
+
+Plot.EAF.VL.C <- ggplot(eaf.VL.C, aes(x = reorder(taxon, mean_eaf, mean), y = mean_eaf, color = n_reps_unlab)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = mean_eaf - se_eaf, ymax = mean_eaf + se_eaf)) + 
+  geom_hline(yintercept = 0) + 
+  theme_classic2() + 
+  ggtitle("VL EAF")
+Plot.EAF.VL.C
+
+
+# Create new directory for APE dfs and plots 
+dir.create("APE")
+
+Plot.EAF.Ridge <- ggarrange(Plot.EAF.RF.C, Plot.EAF.RL.C, nrow = 1, ncol = 2)
+Plot.EAF.Ridge
+Plot.EAF.Valley <- ggarrange(Plot.EAF.VF.C, Plot.EAF.VL.C, nrow = 1, ncol = 2)
+Plot.EAF.Valley 
+
+ggsave("APE/Plot.EAF.Ridge.png", Plot.EAF.Ridge)
+ggsave("APE/Plot.EAF.Valley.png", Plot.EAF.Valley)
+
+
+```
+
+12. Calculating the porportion and/or % Nitrogen Assimilation We only
+    need to include columns: \_EAF, taxon id, and observation, and stats
+
+```{r echo = FALSE, warning = FALSE}
+
+eaf1.RF.C <- select(eaf.RF.C, matches(c("taxon", "^xO5[0-9]F+_EAF", "mean_eaf", "n_trt_tubes", "sd_eaf", "se_eaf", "CI90_eaf" )))
+eaf1.RL.C <- select(eaf.RL.C, matches(c("taxon", "^xO5[0-9]L+_EAF", "mean_eaf", "n_trt_tubes", "sd_eaf", "se_eaf", "CI90_eaf" )))
+eaf1.VF.C <- select(eaf.VF.C, matches(c("taxon", "^xA5[0-9]F+_EAF", "mean_eaf", "n_trt_tubes", "sd_eaf", "se_eaf", "CI90_eaf" )))
+eaf1.VL.C <- select(eaf.VL.C, matches(c("taxon", "^xA5[0-9]L+_EAF", "mean_eaf", "n_trt_tubes", "sd_eaf", "se_eaf", "CI90_eaf" )))
+
+
+# Order by mean_EAF value (high to low)
+eaf1.RF.C <- eaf1.RF.C[order(eaf1.RF.C$mean_eaf, decreasing = TRUE), ]
+eaf1.RL.C <- eaf1.RL.C[order(eaf1.RL.C$mean_eaf, decreasing = TRUE), ]
+eaf1.VF.C <- eaf1.VF.C[order(eaf1.VF.C$mean_eaf, decreasing = TRUE), ]
+eaf1.VL.C <- eaf1.VL.C[order(eaf1.VL.C$mean_eaf, decreasing = TRUE), ]
+
+
+# Note there is alot of NaN in my df. 
+
+dim(eaf1.RF.C) #513 x 13
+
+
+ # Make eaf1 df into long format 
+
+eaf1.long.RF.C <- pivot_longer(eaf1.RF.C, cols = names(eaf1.RF.C[2:8]), names_to = "tube", values_to = "EAF")
+eaf1.long.RL.C <- pivot_longer(eaf1.RL.C, cols = names(eaf1.RL.C[2:8]), names_to = "tube", values_to = "EAF")
+eaf1.long.VF.C <- pivot_longer(eaf1.VF.C, cols = names(eaf1.VF.C[2:8]), names_to = "tube", values_to = "EAF")
+eaf1.long.VL.C <- pivot_longer(eaf1.VL.C, cols = names(eaf1.VL.C[2:8]), names_to = "tube", values_to = "EAF")
+
+
+# Rename tube columns 
+eaf1.long.RF.C$tube <-gsub("x", "", gsub("_EAF", "", eaf1.long.RF.C$tube))
+eaf1.long.RL.C$tube <-gsub("x", "", gsub("_EAF", "", eaf1.long.RL.C$tube))
+eaf1.long.VF.C$tube <-gsub("x", "", gsub("_EAF", "", eaf1.long.VF.C$tube))
+eaf1.long.VL.C$tube <-gsub("x", "", gsub("_EAF", "", eaf1.long.VL.C$tube))
+
+# Make any negative EAF values = NA, or those over 1 = NA
+# Impossible to have a negative or above 1 EAF: Either took up the labeled substrates or it didn't 
+# Depending on how you want to analyze your data, you might want to leave the negative EAF
+
+
+eaf1.long.RF.C$EAF[eaf1.long.RF.C$EAF > 1] <- NA
+eaf1.long.RL.C$EAF[eaf1.long.RL.C$EAF > 1] <- NA
+eaf1.long.VF.C$EAF[eaf1.long.VF.C$EAF > 1] <- NA
+eaf1.long.VL.C$EAF[eaf1.long.VL.C$EAF > 1] <- NA
+
+eaf1.long.RF.C$EAF[eaf1.long.RF.C$EAF < 0] <- NA
+eaf1.long.RL.C$EAF[eaf1.long.RL.C$EAF < 0] <- NA
+eaf1.long.VF.C$EAF[eaf1.long.VF.C$EAF < 0] <- NA
+eaf1.long.VL.C$EAF[eaf1.long.VL.C$EAF < 0] <- NA
+
+# Bring in the ncopies.tube.taxa df and merge together with eaf df 
+
+eaf.rel.RF.C <- merge(eaf1.long.RF.C, ncopies.tube.taxa, all.x = TRUE)
+eaf.rel.RL.C <- merge(eaf1.long.RL.C, ncopies.tube.taxa, all.x = TRUE)
+eaf.rel.VF.C <- merge(eaf1.long.VF.C, ncopies.tube.taxa, all.x = TRUE)
+eaf.rel.VL.C <- merge(eaf1.long.VL.C, ncopies.tube.taxa, all.x = TRUE)
+
+# double check to make sure that the correct tube is merge together 
+unique(eaf.rel.RF.C$tube) #Yes, it worked 
+unique(eaf.rel.VF.C$tube)
+
+# Run function to calculate substrate assimilation
+# There will be two columns for the uncorrected assimilation 
+# and corrected assimilation. Because, relative abundance 
+# data is use to calculate assimilation, the corrected 
+# assimilation accounts for all the filtering that was done 
+
+assimilation_eqn <- function (df){
+  df1 <- df
+  # Sum of filtered ncopies.taxa.sum (this value should be lower than the ncopies.tube.sum)
+  for (i in 1:length(df1$tube)) {
+    df1$rel.ncopies.sum.filtered[i] <- sum(df1$rel.ncopies[df1$tube %in% df1$tube[i]])
+  }
+  
+  # piAi = Proportion of rel.ncopies (pi) * EAF (Ai)
+  df1$piAi <- df1$rel.ncopies * df1$EAF
+  
+  # Sum of piAi by tube
+  for(i in 1:length(df1$tube)){
+    df1$piAi.sum[i] <- sum(df1$piAi[df1$tube %in% df1$tube[i]], na.rm = TRUE)
+  }
+  
+  # Corrected piAi.sum -- Accounts for filtering (value less than 1)
+  df1$piAi.sum.cor <- df1$piAi.sum/df1$rel.ncopies.sum.filtered
+  
+  # Calculate the percent substrate assimilation and corrected assimilation
+  # Optional: You can change iso to match the isotope you used (13C, 15N, or 18O)
+  df1$iso.Ai <- (df1$piAi/df1$piAi.sum)*100
+  df1$iso.Ai.cor <- (df1$piAi/df1$piAi.sum.cor)*100
+  
+  # Double check to see if your calculation is correct
+  # For the uncorrected iso.Ai, sum = 100
+  # For the corrected iso.Ai, sum = rel.ncopies.sum.filtered * 100
+  for(i in 1:length(df1$tube)){
+    df1$iso.Ai.sum[i] <- sum(df1$iso.Ai[df1$tube %in% df1$tube[i]], na.rm = TRUE)
+  }
+  
+  for(i in 1:length(df1$tube)){
+    df1$iso.Ai.sum.corr[i] <- sum(df1$iso.Ai.cor[df1$tube %in% df1$tube[i]], na.rm = TRUE)
+  }
+  
+  return (df1)
+}
+
+
+eaf.rel.RF.C <- assimilation_eqn(eaf.rel.RF.C)
+eaf.rel.RL.C <- assimilation_eqn(eaf.rel.RL.C)
+eaf.rel.VF.C <- assimilation_eqn(eaf.rel.VF.C)
+eaf.rel.VL.C <- assimilation_eqn(eaf.rel.VL.C)
+
+
+# Save 
+write.csv(eaf.rel.RF.C, "APE/eaf.rel.RF.C.csv", row.names = FALSE)
+write.csv(eaf.rel.RL.C, "APE/eaf.rel.RL.C.csv", row.names = FALSE)
+write.csv(eaf.rel.VF.C, "APE/eaf.rel.VF.C.csv", row.names = FALSE)
+write.csv(eaf.rel.VL.C, "APE/eaf.rel.VL.C.csv", row.names = FALSE)
+
+
+
+```
+
+13. Plotting Dataframe Prep
+
+```{r include = FALSE, warning = FALSE}
+
+#change relevant column names to match code
+colnames(eaf.rel.RF.C)[which(names(eaf.rel.RF.C) == "iso.Ai.cor")] <- "NAi"
+colnames(eaf.rel.RL.C)[which(names(eaf.rel.RL.C) == "iso.Ai.cor")] <- "NAi"
+colnames(eaf.rel.VF.C)[which(names(eaf.rel.VF.C) == "iso.Ai.cor")] <- "NAi"
+colnames(eaf.rel.VL.C)[which(names(eaf.rel.VL.C) == "iso.Ai.cor")] <- "NAi"
+
+
+#merge Site files together
+genus.all.valley <- rbind(eaf.rel.VF.C, eaf.rel.VL.C)
+genus.all.ridge <- rbind(eaf.rel.RF.C, eaf.rel.RL.C)
+
+
+length(unique(genus.all.valley$taxon)) #both 513
+length(unique(genus.all.ridge$taxon)) 
+
+#make sure to keep taxon column for ID
+
+genus.all.valley <- genus.all.valley %>% separate(taxon, 
+                                              c("Domain", "Phylum", "Class", "Order", "Family", "Genus"),
+                                              ".[a-z]__", remove = FALSE)
+
+genus.all.ridge <- genus.all.ridge %>% separate(taxon, 
+                                            c("Domain", "Phylum", "Class", "Order", "Family", "Genus"),
+                                            ".[a-z]__", remove = FALSE)
+
+
+
+#Cleaning Up
+#remove .__ at end of taxa name on some 
+genus.all.valley$Family <- gsub('.__', '', genus.all.valley$Family)
+genus.all.valley$Order <- gsub('.__.__', '', genus.all.valley$Order)
+genus.all.valley$Class <- gsub('.__.__.__', '', genus.all.valley$Class)
+genus.all.valley$Domain <- gsub('d__', '', genus.all.valley$Domain)
+genus.all.ridge$Family <- gsub('.__', '', genus.all.ridge$Family)
+genus.all.ridge$Order <- gsub('.__.__', '', genus.all.ridge$Order)
+genus.all.ridge$Class <- gsub('.__.__.__', '', genus.all.ridge$Class)
+genus.all.ridge$Domain <- gsub('d__', '', genus.all.ridge$Domain)
+genus.all.ridge$Domain <- gsub('.__.__.__.__.__', '', genus.all.ridge$Domain)
+genus.all.valley$Domain <- gsub('.__.__.__.__.__', '', genus.all.valley$Domain)
+genus.all.ridge$Phylum <- gsub('.__.__.__.__', '', genus.all.ridge$Phylum)
+genus.all.valley$Phylum <- gsub('.__.__.__.__', '', genus.all.valley$Phylum)
+
+
+#remove "chloroplasts and mitochondria"
+
+genus.all.valley <- genus.all.valley %>%
+  filter(!grepl('Chloroplast', Genus)) %>%
+  filter(!grepl('Mitochondria', Genus))
+  
+genus.all.ridge <- genus.all.ridge %>%
+  filter(!grepl('Chloroplast', Genus)) %>%
+  filter(!grepl('Mitochondria', Genus))
+
+#replace NA with highest given taxonomy. Have to start high and go low ****
+genus.all.valley$Phylum[is.na(genus.all.valley$Phylum)] <- genus.all.valley$Domain[is.na(genus.all.valley$Phylum)]
+genus.all.valley$Class[is.na(genus.all.valley$Class)] <- genus.all.valley$Phylum[is.na(genus.all.valley$Class)]
+genus.all.valley$Order[is.na(genus.all.valley$Order)] <- genus.all.valley$Class[is.na(genus.all.valley$Order)]
+genus.all.valley$Family[is.na(genus.all.valley$Family)] <- genus.all.valley$Order[is.na(genus.all.valley$Family)]
+
+genus.all.ridge$Phylum[is.na(genus.all.ridge$Phylum)] <- genus.all.ridge$Domain[is.na(genus.all.ridge$Phylum)]
+genus.all.ridge$Class[is.na(genus.all.ridge$Class)] <- genus.all.ridge$Phylum[is.na(genus.all.ridge$Class)]
+genus.all.ridge$Order[is.na(genus.all.ridge$Order)] <- genus.all.ridge$Class[is.na(genus.all.ridge$Order)]
+genus.all.ridge$Family[is.na(genus.all.ridge$Family)] <- genus.all.ridge$Order[is.na(genus.all.ridge$Family)]
+
+#make NAs in Genus column "unknown"
+genus.all.ridge$Genus[is.na(genus.all.ridge$Genus)] <- paste(genus.all.ridge$Family[is.na(genus.all.ridge$Genus)],c("Unknown"))
+genus.all.valley$Genus[is.na(genus.all.valley$Genus)] <- paste(genus.all.valley$Family[is.na(genus.all.valley$Genus)],c("Unknown"))
+
+#make "uncultured" = NA now
+genus.all.valley[genus.all.valley == "uncultured" ] <- NA
+genus.all.valley$Class[is.na(genus.all.valley$Class)] <- paste(genus.all.valley$Phylum[is.na(genus.all.valley$Class)])
+genus.all.valley$Order[is.na(genus.all.valley$Order)] <- paste(genus.all.valley$Class[is.na(genus.all.valley$Order)])
+genus.all.valley$Family[is.na(genus.all.valley$Family)] <- paste(genus.all.valley$Order[is.na(genus.all.valley$Family)])
+genus.all.valley$Genus[is.na(genus.all.valley$Genus)] <- paste(genus.all.valley$Family[is.na(genus.all.valley$Genus)],c("uncultured"))
+
+genus.all.ridge[genus.all.ridge == "uncultured" ] <- NA
+genus.all.ridge$Class[is.na(genus.all.ridge$Class)] <- paste(genus.all.ridge$Phylum[is.na(genus.all.ridge$Class)])
+genus.all.ridge$Order[is.na(genus.all.ridge$Order)] <- paste(genus.all.ridge$Class[is.na(genus.all.ridge$Order)])
+genus.all.ridge$Family[is.na(genus.all.ridge$Family)] <- paste(genus.all.ridge$Order[is.na(genus.all.ridge$Family)])
+genus.all.ridge$Genus[is.na(genus.all.ridge$Genus)] <- paste(genus.all.ridge$Family[is.na(genus.all.ridge$Genus)],c("uncultured"))
+
+#double check to make sure didn't get rid of any ASVs except mitochondria and chloroplast
+length(unique(genus.all.ridge$Genus)) 
+#now 511 
+length(unique(genus.all.valley$Genus))
+#now 511
+
+
+#sum for NAi
+genus.all.valley <- summaryBy(NAi ~ taxon + Method + tube, data = genus.all.valley, FUN = sum.na_rm, id = c("Genus", "Phylum", "Class", "Order", "Family", "EAF"))
+genus.all.ridge <- summaryBy(NAi ~ taxon + Method + tube, data = genus.all.ridge, FUN = sum.na_rm, id = c("Genus", "Phylum", "Class", "Order", "Family", "EAF"))
+
+#median for EAF
+genus.all.valley <- summaryBy(EAF ~ taxon + Method + tube, data = genus.all.valley, FUN = median.na_rm, id = c("Genus", "Phylum", "Class", "Order", "Family", "NAi.sum.na_rm"))
+genus.all.ridge <- summaryBy(EAF ~ taxon + Method + tube, data = genus.all.ridge, FUN = median.na_rm, id = c("Genus", "Phylum", "Class", "Order", "Family", "NAi.sum.na_rm"))
+
+
+#remove .sum.na_rm and .median.na_rm
+names(genus.all.ridge) <- gsub('.sum.na_rm', '', names(genus.all.ridge))
+names(genus.all.ridge) <- gsub('.median.na_rm', '', names(genus.all.ridge))
+names(genus.all.valley) <- gsub('.sum.na_rm', '', names(genus.all.valley))
+names(genus.all.valley) <- gsub('.median.na_rm', '', names(genus.all.valley))
+
+write.csv(genus.all.valley, "genus.all.valley.csv")
+write.csv(genus.all.ridge, "genus.all.ridge.csv")
+
+
+#get "Lab_EAF", "Field_EAF", "Lab_NAi", and "Field_NAi" as columns 
+#remove F and L from tube names
+genus.all.valley$tube <- gsub('F', '', genus.all.valley$tube)
+genus.all.valley$tube <- gsub('L', '', genus.all.valley$tube)
+genus.all.ridge$tube <- gsub('F', '', genus.all.ridge$tube)
+genus.all.ridge$tube <- gsub('L', '', genus.all.ridge$tube)
+
+
+valley.df <- pivot_wider(genus.all.valley, names_from = "Method", values_from = c("NAi", "EAF"), id_cols = c("tube", "Genus", "Phylum", "Class", "Order", "Family", "taxon"))
+ridge.df <- pivot_wider(genus.all.ridge, names_from = "Method", values_from = c("NAi", "EAF"), id_cols = c("tube", "Genus", "Phylum", "Class", "Order", "Family", "taxon"))
+
+#individual site dataframes
+write.csv(valley.df, "valley.df.csv")
+write.csv(ridge.df, "ridge.df.csv")
+
+
+#get both Sites together
+
+#add Site column
+valley.df <- valley.df %>%
+  mutate(Site = "Valley") 
+ridge.df <- ridge.df %>%
+  mutate(Site = "Ridge") 
+
+
+both.Sites <- bind_rows(valley.df, ridge.df)
+#7151 (511 *14 tubes)
+
+#has all reps 
+write.csv(both.Sites, "both.Sites.csv")
+
+
+median.all.asv.unfilt <- summaryBy(NAi_Field + NAi_Lab + EAF_Field + EAF_Lab ~ taxon + Site, data = both.Sites, FUN = median.na_rm, id = c("Phylum", "Family", "Order", "Class", "Genus"), keep.names = TRUE)
+
+#maybe add taxon to id cols above next time
+
+#reps are summarized by median (NAi is very not normal, probably could've done mean for EAF but usually about the same anyway)
+write.csv(median.all.asv.unfilt, "median.all.asv.unfilt.csv")
+
+NAi.long <- pivot_longer(both.Sites,
+                         cols = c("NAi_Lab", "NAi_Field"),
+                         names_to = "Method",
+                         names_prefix = "NAi_",
+                         values_to = "NAi")
+
+EAF.only <- pivot_longer(both.Sites,
+                         cols = c("EAF_Lab", "EAF_Field"),
+                         names_to = "Method",
+                         names_prefix = "EAF_",
+                         values_to = "EAF")
+
+#remove extra (I.e. either EAF or NAi) columns. 
+#CHECK THIS IS RIGHT EACH TIME BECAUSE ALWAYS GETS THROWN OFF
+NAi.long <- NAi.long[,-c(8:9)]
+EAF.only <- EAF.only[,-c(8:9)]
+
+#now merge EAF and NAi
+bf.bi.long <- left_join(NAi.long, EAF.only, 
+                        by = c("tube", "Genus", "Class", "Phylum", "Family", "Order", "Site", "Method", "taxon"),
+                        keep = FALSE)
+
+bf.bi.long$Method <- as.factor(bf.bi.long$Method)
+bf.bi.long$Site <- as.factor(bf.bi.long$Site)
+
+bf.bi.long$Site_Method <- paste(bf.bi.long$Site,bf.bi.long$Method)
+bf.bi.long$Site_Method <- as.factor(bf.bi.long$Site_Method)
+
+bf.bi.long <- bf.bi.long %>%
+  #make NAi 0's = NA if they exist
+  mutate_at(c('NAi'), ~na_if(., 0)) %>%
+  group_by(taxon, Genus, Phylum, Order, Family, Class, Site_Method)
+
+#long-format version of both.Sites
+write.csv(bf.bi.long, "bf.bi.long.csv")
+
+
+
+```
+
+14. Table 1: Plant and soil properties at the Valley and Ridge sites.
+    Dataframe with reps (FxP.csv)
+
+```{r echo = FALSE, warning = FALSE}
+
+#T-test for Site Properties
+SiteProps <- read.csv("FxP.csv")
+
+SiteProps$Site <- as.factor(SiteProps$Site)
+
+summarySiteProps <- SiteProps %>%
+  group_by(Site) %>%
+  get_summary_stats()
+
+
+t.test(SiteProps$plant_massg ~ SiteProps$Site)
+t.test(SiteProps$plant_ht.m ~ SiteProps$Site)
+t.test(SiteProps$perc_15NPlantUptake ~ SiteProps$Site)
+t.test(SiteProps$C.NRhizosphere ~ SiteProps$Site)
+t.test(SiteProps$PercN.Rhizo ~ SiteProps$Site)
+t.test(SiteProps$PercC.Rhizo ~ SiteProps$Site)
+t.test(SiteProps$PercS.Rhizo ~ SiteProps$Site)
+t.test(SiteProps$Perc.Moisture ~ SiteProps$Site)
+t.test(SiteProps$SOM ~ SiteProps$Site)
+t.test(SiteProps$pH ~ SiteProps$Site)
+t.test(SiteProps$WHC ~ SiteProps$Site)
+
+#Manually made table with this data.
+
+```
+
+15. Table 2: Microbial processes measured in the field and lab at the
+    Ridge and Valley sites. Use dataframe FvL.csv
+
+```{r echo = TRUE, warning = FALSE}
+
+FvL <- read.csv("FvL.csv")
+
+summaryFvL <- FvL %>%
+  group_by(Site, Method) %>%
+  get_summary_stats()
+
+#2-way ANOVA. Tukey on interaction if present
+
+copiesaov <- aov(data = FvL, X16Scopies_gsoil ~ Site * Method)
+summary(copiesaov)
+
+#               Df    Sum Sq   Mean Sq F value  Pr(>F)   
+#Site             1 3.999e+17 3.999e+17   3.904 0.05977 . 
+#Method       1 5.578e+17 5.578e+17   5.445 0.02833 * 
+#  Site:Method  1 1.300e+18 1.300e+18  12.695 0.00158 **
+ # Residuals       24 2.458e+18 1.024e+17                   
+
+  
+
+  
+TukeyHSD(copiesaov, "Site:Method")
+
+#try sep for each Site 1 way anova
+
+#Valley lab has some high samples
+
+ggplot(FvL) +
+ aes(x = X16Scopies_gsoil, fill = Method) +
+ geom_histogram(bins = 62L) +
+ scale_fill_hue(direction = 1) +
+ theme_minimal()
+
+
+ggplot(FvL) +
+ aes(x = X16Scopies_gsoil, y = Method, fill = Method) +
+ geom_boxplot() +
+ scale_fill_hue(direction = 1) +
+ theme_minimal() +
+ facet_wrap(vars(Site))
+
+
+
+summary(aov(data = FvL, CO2Flux ~ Site * Method))
+
+TukeyHSD(aov(data = FvL, CO2Flux ~ Site * Method), "Site:Method")
+
+summary(aov(data = FvL, NetNitrif ~ Site * Method))
+#no interaction
+summary(aov(data = FvL, NetImmob ~ Site * Method))
+#interaction
+TukeyHSD(aov(data = FvL, NetImmob ~ Site * Method), "Site:Method")
+
+summary(aov(data = FvL, BiomassC ~ Site * Method))
+#no sig
+
+
+#Made table from these results manually.
+```
+
+16. Supplemental Figure 2: NMDS of prokaryotic community composition
+    (16S rRNA gene sequences) pre- and post-Method. Agreement Analyses
+
+```{r echo = TRUE, warning = FALSE}
+#NMDS
+
+Lv6.filt.tube <- read.csv("Lv6-filt-tube_corrected.csv", header = TRUE)
+
+tail(Lv6.filt.tube[,c(702:707)]) #has metadata cols
+
+metadata_tube <- Lv6.filt.tube[, names(Lv6.filt.tube) %in% data_meta_col_names]
+#remove all except index
+matrix <- Lv6.filt.tube[,-c( 703:707)]
+
+dim(matrix)
+tail(matrix[,701:703]) #should end in bacillus
+tail(matrix[,1:3])
+#Make row names 
+rownames(matrix) <- matrix$index
+matrix <- matrix[,-1]
+
+
+metadata_tube$Method <- as.factor(metadata_tube$Method)
+metadata_tube$Site <- as.factor(metadata_tube$Site)
+
+#makes distance matrix for you, might autotransform it... check autotransform = FALSE
+NMDS <- metaMDS(matrix)
+
+#also try making matrix for stats and then feeding in
+dist.matrix <- vegdist(matrix, method="bray")
+
+#runs Adonis/PerMANOVA, this runs a two-way PerMANOVA 
+adonis <- adonis2(dist.matrix ~ Site * Method, data=metadata_tube, permutations=999, method = "bray", sqrt.dist = TRUE)
+
+print(adonis)
+
+#Psuedo F is 0 or positive, with larger values corresponding to larger proportional importance of the grouping factor.
+
+ #           Df SumOfSqs      R2      F Pr(>F)    
+#Site         1   0.9944 0.19236 9.4930  0.001 ***
+#Method       2   0.2241 0.04335 1.0696  0.281    
+#Site:Method  2   0.1800 0.03481 0.8590  0.733    
+#Residual    36   3.7711 0.72948                  
+#Total       41   5.1696 1.00000                           
+
+#So Site accounts for 19.2 % of the variation and the communities are sig. different between sites.
+#Method only accounts for 4.3% of the variation, and communities are not sig. diff. between sites overall
+capture.output(print(adonis,file="adonis.2.way.txt") )
+
+#also ran 1-way versions, and with site separated and pre-inc filtered out, but no big change and believe that the 2-way is most correct. 
+
+#cont. for plotting
+
+plot_df <- scores(NMDS, display = "sites") %>% 
+  as.data.frame() %>% 
+  rownames_to_column("site") %>% 
+  full_join(metadata_tube, by = c("site" = "index"))
+
+
+
+plot_nmds <- ggplot(plot_df, aes(x = NMDS1, y = NMDS2, color = Method, shape = Site)) +
+  geom_point(size = 6, alpha = 0.8) +
+ # stat_ellipse(linetype = 2, size = 1) +
+  scale_color_manual(values = c("Lab" = "#7F3FD0", "Field" ='#085A12', "Pre-Inc" = "darkgrey")) +
+  theme_clean() +
+  labs(title = "NMDS") +
+  theme(legend.position = "right",
+        axis.title = element_text(face = "bold"),
+        plot.caption = element_text(hjust = 0),
+        axis.ticks = element_blank(),
+        plot.background = element_blank(),
+        panel.background = element_blank() ,
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank()) 
+plot_nmds
+
+
+dir.create("PubGraphs")
+ggsave("PubGraphs/NMDS.png")
+ggsave("PubGraphs/NMDS.svg")
+
+
+```
+
+17. Figure 2A and 2B: Kernel density plots of A) the median relative N
+    assimilation rates (over 5 days) for each genus, and B) the median %
+    15N assimilated for each genus (note log10 scale).
+
+```{r echo = TRUE, warning = FALSE}
+
+
+#use median values
+
+median.bf.bi.long <- bf.bi.long %>%
+  #make NAi 0's = NA if exist
+  mutate_at(c('NAi'), ~na_if(., 0)) %>%
+  group_by(taxon, Genus, Phylum, Order, Family, Class, Site_Method) %>%
+  summarise(medianNAi = median.na_rm(NAi), medianEAF = median.na_rm(EAF))
+  
+write.csv(median.bf.bi.long, "median.bf.bi.long.csv")
+
+EAF_dens_median <- median.bf.bi.long %>%
+  ggplot( aes(x=medianEAF, color=Site_Method)) +
+  geom_density(size = 1.3, alpha= 0.7 , na.rm = TRUE) +
+  scale_color_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  labs(title = expression(Relative~N~Assimilation~Rate), y = 'Density', x = '(per 5 Days)') +
+  theme_classic() +
+  labs(color = "Site - Method") +
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+      #  axis.title.x = element_blank(),
+        axis.text = element_text(size = 12),
+        plot.caption = element_text(hjust = 0),
+        plot.title = element_text(face = 'bold', hjust = 0.5, size = 14),
+        axis.ticks = element_blank(),
+        plot.background = element_blank()) 
+
+EAF_dens_median
+ggsave("PubGraphs/EAF_Fig2A.png")
+ggsave("PubGraphs/EAF_Fig2A.svg")
+
+
+NAi_dens.noyaxislab_median <-
+  median.bf.bi.long %>%
+  ggplot(aes(x=medianNAi, color=Site_Method)) +
+  geom_density(size = 1.3, alpha= 0.7, na.rm = TRUE ) +
+  scale_x_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                labels = trans_format("log10", math_format(10^.x))) +
+ # scale_color_viridis(discrete=TRUE, option = "H") +
+  scale_color_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  labs(title = expression('%'~N~Assimilated), y = 'Density', x = 'log(10)') +
+  theme_classic() +
+  labs(color = "Site - Method") +
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        axis.title = element_text(size = 12),
+       # axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text = element_text(size = 12),
+        plot.caption = element_text(hjust = 0),
+       plot.title = element_text(face = 'bold', hjust = 0.5, size = 14),
+        axis.ticks = element_blank(),
+        plot.background = element_blank()) 
+
+
+
+NAi_dens.noyaxislab_median
+
+ggsave("PubGraphs/NAi_density_Fig2B.png")
+ggsave("PubGraphs/NAi_density_Fig2B.svg")
+
+ggarrange(EAF_dens_median,NAi_dens.noyaxislab_median, ncol = 2, common.legend = TRUE, legend = "bottom", labels = c("A", "B"), font.label = list(size = 16))
+
+#Used for Fig 2 A and B
+ggsave("PubGraphs/Combined_density_median.png")
+ggsave("PubGraphs/Combined_density.median.svg")
+
+  
+
+```
+
+18. Figure 2C and 2D: Equivariant Passing-Bablok regressions of median
+    lab and field measurements of taxon-specific C) relative N
+    assimilation rates and D) the % N assimilated for each site
+    independently (purple and green) and both sites together (yellow).
+
+Fig 4a. is a Equivariant Passing-Bablock Regression over a scatter plot
+Passing Bablok regression like Deming, but is a non-parametric method
+that does not make any assumptions about the distributions of the
+samples or their measurement errors (Passing and Bablok, 1983). The
+method does, however, assume the two variables are highly correlated and
+have a linear relationship. For Passing-Bablok regression a nested
+bootstrap (bias corrected and accelerated) interval is preferred, but
+this can take a very long time with large datasets, where an approximate
+Passing-Bablok procedure may be more practical. - If the confidence
+interval for the slope does not contain the value 1 then you reject the
+null hypothesis that the slope is equal to 1 - in other words there is
+statistically significant evidence of at least a proportional difference
+between the two methods. - If the confidence interval for the intercept
+does not contain the value 0 then you reject the null hypothesis that
+the intercept is equal to 0 - in other words there is statistically
+significant evidence that the methods differ by at least a constant
+amount.
+
+
+Running Analyses
+
+```{r include = FALSE, warning = FALSE}
+
+Ridge <- subset(median.all.asv.unfilt, Site == "Ridge")
+Valley <- subset(median.all.asv.unfilt, Site == "Valley")
+
+
+NAi.PaBa.Ridge <- mcreg(x = Ridge$NAi_Lab,
+                        y = Ridge$NAi_Field,
+                        method.reg = "PBequi",
+                        mref.name = "Lab",
+                        mtest.name = "Field",
+                        sample.names = NULL,
+                        na.rm = TRUE
+) #default alpha = 0.05
+
+
+EAF.PaBa.Ridge <- mcreg(x = Ridge$EAF_Lab,
+                        y = Ridge$EAF_Field,
+                        method.reg = "PBequi",
+                        mref.name = "Lab",
+                        mtest.name = "Field",
+                        sample.names = NULL,
+                        na.rm = TRUE
+) #default alpha = 0.05
+
+
+print(NAi.PaBa.Ridge@para)
+
+#               EST SE           LCI         UCI
+#Intercept 0.0000000 NA -7.466146e-06 0.000114312
+#Slope     0.9513317 NA  9.040492e-01 0.995927631
+
+#CI for Intercept does contain the value 0, accept null hypothesis, NO evidence that methods differ by at least a constant amount
+#CI for Slope DOES NOT contain the value 1, so statistically significant evidence of even proportional differences between the two methods.
+
+
+print(EAF.PaBa.Ridge@para)
+
+#Please note: 
+ # 4 of 511 observations contain missing values and have been removed.
+# Number of data points in analysis is 507.
+
+#                 EST SE         LCI         UCI
+#Intercept -0.01488444 NA -0.03059966 -0.00205814
+#Slope      0.86630679 NA  0.78776927  0.94927549
+
+#CI for Intercept does NOT contain the value 0, reject null hypothesis, evidence that methods differ by at least a constant amount
+#CI for Slope DOES not contain the value 1, so statistically significant evidence of a proportional differences between the two methods.
+
+NAi.PaBa.Valley <- mcreg(x = Valley$NAi_Lab,
+                         y = Valley$NAi_Field,
+                         method.reg = "PBequi",
+                         mref.name = "Lab",
+                         mtest.name = "Field",
+                         sample.names = NULL,
+                         na.rm = TRUE
+) #default alpha = 0.05
+
+
+
+EAF.PaBa.Valley <- mcreg(x = Valley$EAF_Lab,
+                         y = Valley$EAF_Field,
+                         method.reg = "PBequi",
+                         mref.name = "Lab",
+                         mtest.name = "Field",
+                         sample.names = NULL,
+                         na.rm = TRUE
+                         ) #default alpha = 0.05
+
+#Please note: 
+#5 of 511 observations contain missing values and have been removed.
+#Number of data points in analysis is 506.
+
+print(NAi.PaBa.Valley@para)
+
+#                   EST SE          LCI      UCI
+#Intercept -2.229398e-05 NA -0.001274343 0.000000
+#Slope      1.018069e+00 NA  0.978567933 1.062565
+
+#CI for Intercept does contain the value 0, accept null hypothesis, no evidence that methods differ by at least a constant amount
+#CI for Slope DOES contain the value 1, so no statistically significant evidence of even proportional differences between the two methods.
+
+
+print(EAF.PaBa.Valley@para)
+#                  EST SE         LCI        UCI
+#Intercept 0.01535646 NA 0.003636968 0.02618975
+#Slope     0.87354369 NA 0.793714878 0.95367251
+#CI for Intercept does NOT contain the value 0, reject null hypothesis, evidence that methods differ by at least a constant amount
+#CI for Slope DOES not contain the value 1, so statistically significant evidence of a proportional differences between the two methods.
+#^^^ intercept conclusion is different than Ridge
+
+
+printSummary(NAi.PaBa.Ridge)
+
+printSummary(EAF.PaBa.Ridge)
+
+printSummary(EAF.PaBa.Valley)
+
+printSummary(NAi.PaBa.Valley)
+
+
+#reg line for both sites together together
+
+NAi.PaBa.unfilt <- mcreg(x = median.all.asv.unfilt$NAi_Lab,
+                         y = median.all.asv.unfilt$NAi_Field,
+                         method.reg = "PBequi",
+                         mref.name = "Lab",
+                         mtest.name = "Field",
+                         sample.names = NULL,
+                         na.rm = TRUE
+) #default alpha = 0.05
+
+
+
+print(NAi.PaBa.unfilt@para)
+
+#                EST SE          LCI      UCI
+#Intercept 0.0000000 NA -0.000181743 0.000000
+#Slope     0.9854867 NA  0.952124175 1.019613
+
+#Intercept does include 0 so no constant diff
+#slope does include 1 so no prop diff
+
+
+EAF.PaBa.unfilt <- mcreg(x = median.all.asv.unfilt$EAF_Lab,
+                         y = median.all.asv.unfilt$EAF_Field,
+                         method.reg = "PBequi",
+                         mref.name = "Lab",
+                         mtest.name = "Field",
+                         sample.names = NULL,
+                         na.rm = TRUE
+) #default alpha = 0.05
+
+#9 of 1022 observations contain missing values and have been removed.
+#Number of data points in analysis is 1013.
+
+print(EAF.PaBa.unfilt@para)
+
+#                  EST SE        LCI        UCI
+#Intercept 0.01038293 NA 0.00109323 0.01882823
+#Slope     0.81225241 NA 0.75517484 0.87095758
+
+#Intercept CI does not include 0, so constant diff
+#Slope does not include 1, so proportional diff
+
+
+```
+
+Graphs
+
+-some of these may get a little wonky in Rmarkdown but work in regular R
+code
+
+```{r echo = TRUE, warning = FALSE}
+#possible supplemental
+compareFit(NAi.PaBa.Ridge, NAi.PaBa.Valley,NAi.PaBa.unfilt, EAF.PaBa.Ridge, EAF.PaBa.Valley, EAF.PaBa.unfilt)
+
+
+
+#FOR PUBLICATION (i.e. WITH CoLOR)
+plot(NAi.PaBa.Valley, add.legend = FALSE, 
+     points.col = rgb(red = 147, green = 112, blue = 219,maxColorValue = 255), points.pch = 21,
+     reg.col = rgb(red = 147, green = 112, blue = 219,  maxColorValue = 255),
+     ci.area = TRUE, ci.area.col = rgb(red = 147, green = 112, blue = 219, alpha = 150, maxColorValue = 255),
+     identity = TRUE, identity.col = "black", identity.lwd = 2, 
+     add.grid = FALSE,
+     main = expression('%'~N~Assimilated),
+     add.cor = FALSE)
+
+plot(NAi.PaBa.Ridge,add.legend = FALSE, add = TRUE,
+     points.col = rgb(red = 60, green = 179, blue = 113, maxColorValue = 255), points.pch = 21,
+     reg.col =  rgb(red = 60, green = 179, blue = 113, maxColorValue = 255),
+     main = expression('%'~N~Assimilated),
+     ci.area = TRUE, ci.area.col =  rgb(red = 60, green = 179, blue = 113, alpha = 150, maxColorValue = 255),
+     identity = FALSE, add.cor = FALSE, 
+     add.grid = FALSE)
+
+
+plot(NAi.PaBa.unfilt,add.legend = FALSE, add = TRUE,
+     draw.points = FALSE, 
+     reg.col =  rgb(red = 255, green = 255, blue = 51, maxColorValue = 255),
+     ci.area = TRUE, ci.area.col =  rgb(red = 255, green = 255, blue = 51, alpha = 150, maxColorValue = 255),
+     identity = FALSE,
+     add.grid = FALSE)
+
+includeLegend(place="topleft",models=list(NAi.PaBa.Ridge,NAi.PaBa.Valley,NAi.PaBa.unfilt ),
+              colors=c(rgb(red = 147, green = 112, blue = 219,maxColorValue = 255),rgb(red = 60, green = 179, blue = 113, maxColorValue = 255),rgb(red = 255, green = 255, blue = 51, maxColorValue = 255)),
+              design="1", digits=4, cex = 1.2,
+              model.names = c("Valley", "Ridge", "All Sites"))
+
+NAi_PaBa.plot <- recordPlot()
+
+#saved
+dev.off()
+
+ plot(EAF.PaBa.Valley, add.legend = FALSE, 
+     points.col = rgb(red = 147, green = 112, blue = 219,maxColorValue = 255), points.pch = 21,
+     reg.col = rgb(red = 147, green = 112, blue = 219,  maxColorValue = 255),
+     ci.area = TRUE, ci.area.col = rgb(red = 147, green = 112, blue = 219, alpha = 150,  maxColorValue = 255),    identity = TRUE, identity.col = "black", identity.lwd = 2, 
+     add.grid = FALSE,
+     main = expression(Relative~N~Assimilation~Rate~'/'~5~Days),
+     add.cor = FALSE)
+
+plot(EAF.PaBa.Ridge,add.legend = FALSE, add = TRUE,
+     points.col = rgb(red = 60, green = 179, blue = 113, maxColorValue = 255), points.pch = 21,
+     reg.col =  rgb(red = 60, green = 179, blue = 113, maxColorValue = 255),
+     ci.area = TRUE, ci.area.col =  rgb(red = 60, green = 179, blue = 113, alpha = 150, maxColorValue = 255),
+     main = expression(Relative~N~Assimilation~Rate~'/'~5~Days),
+     identity = FALSE, add.cor = FALSE, cor.method = 'pearson',
+     add.grid = FALSE)
+
+plot(EAF.PaBa.unfilt,add.legend = FALSE, add = TRUE,
+     draw.points = FALSE, 
+     reg.col =  rgb(red = 255, green = 255, blue = 51, maxColorValue = 255),
+     ci.area = TRUE, ci.area.col =  rgb(red = 255, green = 255, blue = 51, alpha = 150, maxColorValue = 255),
+     identity = FALSE,
+     add.cor = TRUE,
+     add.grid = FALSE)
+
+includeLegend(place="topleft",models=list(EAF.PaBa.Valley,EAF.PaBa.Ridge,EAF.PaBa.unfilt ),
+              colors=c(rgb(red = 147, green = 112, blue = 219,maxColorValue = 255),rgb(red = 60, green = 179, blue = 113, maxColorValue = 255),rgb(red = 255, green = 255, blue = 51, maxColorValue = 255)),
+              design="1", digits=4, cex = 1.2,
+              model.names = c("Valley", "Ridge", "All Sites"))
+
+EAF_PaBa.plot <- recordPlot()
+
+
+```
+
+19. Figure 3: Ridgeline plots of A) relative 15N assimilation rate over
+    5 days and B) % 15N assimilated (abundance-weighted) for genera with
+    the greatest median values in the field and lab at both the Ridge
+    and Valley sites.
+
+```{r echo = TRUE, warning = FALSE}
+#keep only those in at least 3 replicates for graphing
+
+tokeep <- bf.bi.long %>%
+  group_by(taxon, Site_Method) %>%
+  summarise(NAi.n = n_distinct(NAi, na.rm = FALSE)) %>%
+  filter(NAi.n > 3) %>%
+  #at least 3 replicates req
+  summarise(trt.n = n_distinct(Site_Method)) %>%
+  filter(trt.n == 4)
+
+#these are ones to keep
+
+bf.bi.long.filt <- merge(bf.bi.long, tokeep, by.y = 'taxon')
+
+bf.bi.long.filt$Genus <- as_factor(bf.bi.long.filt$Genus)
+
+
+NAi.t20.LabIncs<- bf.bi.long.filt %>%  
+  filter(Method == "Lab") %>%
+  group_by(taxon) %>%
+  summarise(median = median(NAi, na.rm = TRUE)) %>% 
+  slice_max(n = 20, order_by = median)           
+
+NAi.t20.FieldIncs <- bf.bi.long.filt %>%
+  filter(Method == "Field") %>%
+  group_by(taxon) %>%
+  summarise(median = median(NAi, na.rm = TRUE)) %>%
+  slice_max(n = 20, order_by = median)
+
+
+
+combined.NAi <- full_join(NAi.t20.FieldIncs, NAi.t20.LabIncs, by = "taxon")
+
+
+taxon <- c("taxon")
+
+NAi.names <- combined.NAi[, taxon]
+
+
+genus.NAi.t20 <- merge(bf.bi.long, NAi.names, by.y = taxon)
+
+length(unique(genus.NAi.t20$Genus)) #22 is the correct length 6/27/2024
+
+
+#Get highest NAi with highest median EAF values for discussion 
+winnersNAi <- genus.NAi.t20 %>%
+  group_by(taxon, Genus) %>%
+  summarise(median.EAF = median.na_rm(EAF), median.NAi = median.na_rm(NAi))
+# is Candidatus_Udaeobacter EAF0.1490902 NAi 1.4272290
+#after that close but Vicinamibacterales uncultured #0.1335499 #3.8814699
+
+#one way anova since sites are. not comparable
+aov_Valley <- genus.NAi.t20 %>%
+  filter(Site == "Valley") %>%
+  group_by(Genus) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(NAi ~ Method, data = .), na.rm = FALSE)))
+
+aov_Valley$aov_results[[2]]#can examine this way for each taxa if desired
+
+unlist.NAi.Valley <- data.frame(matrix(unlist(aov_Valley$aov_results), nrow = length(aov_Valley$aov_results), byrow = T))
+write.csv(unlist.NAi.Valley, "NAi.valley.1wayanova.csv")
+
+aov_Ridge <- genus.NAi.t20 %>%
+  filter(Site == "Ridge") %>%
+  group_by(Genus) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(NAi ~ Method, data = .), na.rm = FALSE)))
+
+aov_Ridge$aov_results[[1]]#change ref for each taxa
+
+unlist.NAi.Ridge <- data.frame(matrix(unlist(aov_Ridge$aov_results), nrow = length(aov_Ridge$aov_results), byrow = T))
+write.csv(unlist.NAi.Ridge, "NAi.ridge.1wayanova.csv")
+
+genus.NAi.t20$Genus <- as.character(genus.NAi.t20$Genus)
+#change names to make fig less wide
+genus.NAi.t20$Genus <- gsub('aceae', 'aceae gen.', genus.NAi.t20$Genus)
+genus.NAi.t20$Genus <- gsub('ales', 'ales gen.', genus.NAi.t20$Genus)
+genus.NAi.t20$Genus <- gsub('Candidatus_Udaeobacter', 'Candidatus Udaeobacter', genus.NAi.t20$Genus)
+#remove uncultured
+genus.NAi.t20$Genus <- gsub('uncultured', '', genus.NAi.t20$Genus)
+
+genus.NAi.t20$Genus <- as.factor(genus.NAi.t20$Genus)
+
+genus.ridgeplot <- genus.NAi.t20 %>%
+  mutate(Genus = fct_reorder(Genus, NAi, .fun = 'median', .na_rm = TRUE)) %>%
+  ggplot(aes(x = NAi, y = Genus, fill = Site_Method, color = Site_Method)) +
+  geom_density_ridges(scale = 1, rel_min_height = 0.0001, alpha = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  #scale_color_viridis(discrete=TRUE) +
+  #scale_fill_viridis(discrete=TRUE) +
+  scale_color_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  scale_fill_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+ scale_x_continuous(limits = c(0, 8), expand = c(0,0), sec.axis = dup_axis(name = "")) +  #Bacillus has one point by 20!! removing for graph but note in capt
+  scale_y_discrete(expand = c(0.04,0)) +
+  labs( y = '', x = '% N Assimilated', caption = "") + #y axis "Genus" removed for ggarrange
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(color = NA),
+        axis.title = element_text(face = "bold", size = 12),
+        plot.caption = element_text(hjust = 0),
+        axis.ticks = element_blank(),
+        plot.background = element_blank(),
+        plot.margin = margin(0.5,2,0,0, unit = "cm"),
+        legend.text = element_text(size = 16), 
+        legend.title = element_blank(), 
+        legend.key.size = unit(0.5, 'cm'),
+        axis.title.y = element_text(size = 16),
+        axis.title.x = element_text(size = 14),
+        axis.text.y = element_text(size = 12 ),
+        axis.text.x = element_text(size = 12 ) )  
+genus.ridgeplot
+
+ggsave("PubGraphs/NAi_ridgeline.png") #purple and green saved as alt
+ggsave("PubGraphs/NAi_ridgeline.svg")
+
+#added significance levels from 1-way ANOVA later in Adobe illustrator 
+
+#Now EAF
+
+EAF.t20.LabIncs <- bf.bi.long.filt %>%
+  filter(Method == "Lab") %>%
+  group_by(taxon) %>%
+  summarise(median = median(EAF, na.rm =  FALSE)) %>% 
+  slice_max(n = 20, order_by = median)
+
+EAF.t20.FieldIncs <- bf.bi.long.filt %>%
+  filter(Method == "Field") %>%
+  group_by(taxon) %>%
+  summarise(median = median(EAF, na.rm = FALSE)) %>%
+              slice_max(n = 20, order_by = median)
+
+
+
+combined.EAF <- full_join(EAF.t20.FieldIncs, EAF.t20.LabIncs, by = "taxon")
+
+EAF.names <- combined.EAF[, taxon]
+
+genus.EAF.t20 <- merge(bf.bi.long, EAF.names, by.y = taxon)
+length(unique(genus.EAF.t20$Genus)) #37 /50
+
+#top EAF assim. genus with highest median NAi for discussion/results
+winnersEAF <- genus.EAF.t20 %>%
+  group_by(taxon, Genus) %>%
+  summarise(median.EAF = median.na_rm(EAF), median.NAi = median.na_rm(NAi))
+# is Nitrososphaeraceae Unknown 0.276558796 Nai, 0.2231532 EAF 
+#others with NAi over 0.2 = Terrimonas EAF 0.149784 NAi 0.221999107
+#Luteolibacter EAF 0.2338113 NAi = 0.294410017
+
+#1-way ANOVA
+aov_ValleyEAF <- genus.EAF.t20 %>%
+  filter(Site == "Valley") %>%
+  group_by(Genus) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(EAF ~ Method, data = .), na.rm = FALSE)))
+
+unlist.EAF.Valley <- data.frame(matrix(unlist(aov_ValleyEAF$aov_results), nrow = length(aov_ValleyEAF$aov_results), byrow = T))
+write.csv(unlist.EAF.Valley, "EAF.valley.1wayanova.csv")
+
+
+aov_RidgeEAF <- genus.EAF.t20 %>%
+  filter(Site == "Ridge") %>%
+  group_by(Genus) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(EAF ~ Method, data = .), na.rm = FALSE)))
+
+unlist.EAF.Ridge <- data.frame(matrix(unlist(aov_RidgeEAF$aov_results), nrow = length(aov_RidgeEAF$aov_results), byrow = T))
+write.csv(unlist.EAF.Ridge, "EAF.ridge.1wayanova.csv")
+
+genus.EAF.t20$Genus <- as.character(genus.EAF.t20$Genus)
+#change names to make fig less wide
+genus.EAF.t20$Genus <- gsub('aceae', 'aceae gen.', genus.EAF.t20$Genus)
+genus.EAF.t20$Genus <- gsub('ales', 'ales gen.', genus.EAF.t20$Genus)
+genus.EAF.t20$Genus <- gsub('_', ' ', genus.EAF.t20$Genus)
+#remove uncultured
+genus.EAF.t20$Genus <- gsub('uncultured', '', genus.EAF.t20$Genus)
+genus.EAF.t20$Genus <- gsub('Unknown', '', genus.EAF.t20$Genus)
+
+genus.EAF.t20$Genus <- as.factor(genus.EAF.t20$Genus)
+
+
+genus.EAF.ridgeplot <- genus.EAF.t20 %>%
+  mutate(Genus = fct_reorder(Genus, EAF, .fun = 'median', .na_rm = TRUE)) %>%  #na_rm important here for ordering.. This median is across BOTH Sites.
+  ggplot(aes(x = EAF, y = Genus, fill = Site_Method, color = Site_Method)) +
+  geom_density_ridges(scale = 1, rel_min_height = 0.0001, alpha = 0.4) +
+  scale_y_discrete(expand = c(0.03,0)) +
+  scale_x_continuous(expand = c(0,0), limits = c(0, 1) , sec.axis = dup_axis(name = "")) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+ # scale_color_viridis(discrete=TRUE) +
+  #scale_fill_viridis(discrete=TRUE) +
+  scale_color_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  scale_fill_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  labs(x = 'Relative N Assimilation Rates 5 Days <sup>-1</sup>', y = 'Genus', caption = "") +
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(color = NA),
+        axis.title = element_text(face = "bold", size = 12),
+        plot.caption = element_text(hjust = 0),
+        axis.ticks = element_blank(),
+        plot.margin = margin(0.5,1,0,0, unit = "cm"),
+        plot.background = element_blank(),
+        legend.text = element_text(size = 16), 
+        legend.title = element_blank(), 
+        legend.key.size = unit(0.5, 'cm'),
+        axis.title.y = element_text(size = 16),
+        axis.title.x = element_markdown(size = 14, vjust = +3),
+        axis.text.y = element_text(size = 11),
+        axis.text.x = element_text(size = 12 ))
+
+genus.EAF.ridgeplot
+
+ggsave("PubGraphs/20EAF_ridgeline.png")
+ggsave("PubGraphs/20EAF_ridgeline.svg")
+
+
+ggarrange(genus.EAF.ridgeplot, NULL, genus.ridgeplot, labels = c("A", "","B"), ncol = 3, nrow =1, common.legend = TRUE, legend = "bottom", align = "hv", widths = c(1, -0.1, 1))
+
+#7 inches by 9 inches or less.
+#Figure file resolution should not be higher than 600 dpi, and #300 dpi is sufficient in nearly all cases.
+ggsave("PubGraphs/Ridgeline_Median_2.png")
+ggsave("PubGraphs/Ridgeline_Median_2.svg")
+ggsave("PubGraphs/Ridgeline_Median_2.pdf")
+
+
+
+
+
+```
+
+
+20. Supplemental Figure 3: Ridgeline plots of A) relative 15N
+    assimilation rate over 5 days and B) % 15N assimilated
+    (abundance-weighted) for phylum with the greatest median values for
+    each method.
+
+```{r echo = TRUE, warning = FALSE}
+
+#sum NAi and median EAF
+#very important 
+
+bf.bi.long_Phylum <- bf.bi.long.filt %>%
+  group_by(tube, Phylum, Site_Method, Site, Method) %>%
+  summarise(summed.NAi = sum.na_rm(NAi), median.EAF = median.na_rm(EAF))
+#this func is na.rm = TRUE
+
+bf.bi.long_Phylum$Phylum <- as_factor(bf.bi.long_Phylum$Phylum)
+
+write.csv(bf.bi.long_Phylum, "bf.bi.long_Phylum.csv")
+
+
+#NAi start
+
+NAi.t20.LabIncs_Phylum <- bf.bi.long_Phylum %>%
+  filter(Method == "Lab") %>%
+  group_by(Phylum) %>%
+  summarise(median = median(summed.NAi, na.rm = TRUE)) %>%
+  slice_max(n = 20, order_by = median)
+
+NAi.t20.FieldIncs_Phylum <- bf.bi.long_Phylum %>%
+  filter(Method == "Field") %>%
+  group_by(Phylum) %>%
+  summarise(median = median(summed.NAi, na.rm = TRUE)) %>%
+  slice_max(n = 20, order_by = median)
+
+
+
+combined.NAi.Phylum <- full_join(NAi.t20.FieldIncs_Phylum, NAi.t20.LabIncs_Phylum, by = "Phylum")
+
+
+#only need Phylum col remove vals
+
+Phylum <- c("Phylum")
+
+NAi.names_Phylum<- combined.NAi.Phylum[, Phylum]
+
+
+NAi.t20_Phylum <- merge(bf.bi.long_Phylum, NAi.names_Phylum, by.y = Phylum)
+
+length(unique(NAi.t20_Phylum$Phylum)) #20
+
+
+aov_ValleyNAi_Phy <- NAi.t20_Phylum %>%
+  filter(Site == "Valley") %>%
+  group_by(Phylum) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(summed.NAi ~ Method, data = .), na.rm = FALSE)))
+
+unlist.NAi.Valley.Phy <- data.frame(matrix(unlist(aov_ValleyNAi_Phy$aov_results), nrow = length(aov_ValleyNAi_Phy$aov_results), byrow = T))
+write.csv(unlist.NAi.Valley.Phy, "NAi.Valley.Phy.1wayanova.csv")
+
+
+aov_RidgeNAi_Phy <- NAi.t20_Phylum %>%
+  filter(Site == "Ridge") %>%
+  group_by(Phylum) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(summed.NAi ~ Method, data = .), na.rm = FALSE)))
+
+
+
+unlist.NAi.Ridge.Phy <- data.frame(matrix(unlist(aov_RidgeNAi_Phy$aov_results), nrow = length(aov_RidgeNAi_Phy$aov_results), byrow = T))
+write.csv(unlist.NAi.Ridge.Phy, "NAi.Ridge.Phy.1wayanova.csv")
+#none sig
+
+#Now EAF
+EAF.t20.LabIncs_Phylum <- bf.bi.long_Phylum %>%
+  filter(Method == "Lab") %>%
+  group_by(Phylum) %>%
+  summarise(median = median(median.EAF, na.rm = TRUE)) %>%
+  slice_max(n = 20, order_by = median)
+
+EAF.t20.FieldIncs_Phylum <- bf.bi.long_Phylum %>%
+  filter(Method == "Field") %>%
+  group_by(Phylum) %>%
+  summarise(median = median(median.EAF, na.rm = TRUE)) %>%
+  slice_max(n = 20, order_by = median)
+
+
+
+combined.EAF.Phylum <- full_join(EAF.t20.FieldIncs_Phylum, EAF.t20.LabIncs_Phylum, by = "Phylum")
+
+#only need Phylum col remove vals
+
+Phylum <- c("Phylum")
+
+EAF.names_Phylum<- combined.EAF.Phylum[, Phylum]
+
+
+EAF.t20_Phylum <- merge(bf.bi.long_Phylum, EAF.names_Phylum, by.y = Phylum)
+
+length(unique(EAF.t20_Phylum$Phylum)) #24
+
+
+aov_ValleyEAF_Phy <- EAF.t20_Phylum %>%
+  filter(Site == "Valley") %>%
+  group_by(Phylum) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(median.EAF ~ Method, data = .), na.rm = FALSE)))
+
+unlist.EAF.Valley.Phy <- data.frame(matrix(unlist(aov_ValleyEAF_Phy$aov_results), nrow = length(aov_ValleyEAF_Phy$aov_results), byrow = T))
+write.csv(unlist.EAF.Valley.Phy, "EAF.Valley.Phy.1wayanova.csv")
+
+
+aov_RidgeEAF_Phy <- EAF.t20_Phylum %>%
+  filter(Site == "Ridge") %>%
+  group_by(Phylum) %>%
+  nest() %>%
+  mutate(.data = .,
+         aov_results = data %>% purrr::map(.x = ., .f = ~ summary(aov(median.EAF ~ Method, data = .), na.rm = FALSE)))
+
+unlist.EAF.Ridge.Phy <- data.frame(matrix(unlist(aov_RidgeEAF_Phy$aov_results), nrow = length(aov_RidgeEAF_Phy$aov_results), byrow = T))
+write.csv(unlist.EAF.Ridge.Phy, "EAF.Ridge.Phy.1wayanova.csv")
+
+
+#highest over both incs
+winners_Phy <- bf.bi.long_Phylum %>%
+  group_by(Phylum) %>%
+  summarise(median.EAF = median.na_rm(median.EAF), median.NAi = median.na_rm(summed.NAi), IQR.NAi = IQR(summed.NAi, na.rm = TRUE), IQR.EAF = IQR(median.EAF, na.rm = TRUE))
+
+#lab
+winners_Phy_Lab <- bf.bi.long_Phylum %>%
+  filter(Method == "Lab") %>%
+  group_by(Phylum) %>%
+  summarise(med.EAF = median.na_rm(median.EAF), median.NAi = median.na_rm(summed.NAi), IQR.NAi = IQR(summed.NAi, na.rm = TRUE), IQR.EAF = IQR(median.EAF, na.rm = TRUE))
+#field
+winners_Phy_Field <- bf.bi.long_Phylum %>%
+  filter(Method == "Field") %>%
+  group_by(Phylum) %>%
+  summarise(med.EAF = median.na_rm(median.EAF), median.NAi = median.na_rm(summed.NAi), IQR.NAi = IQR(summed.NAi, na.rm = TRUE), IQR.EAF = IQR(median.EAF, na.rm = TRUE))
+
+
+
+Phylum.ridgeplot <- NAi.t20_Phylum %>%
+  mutate(Phylum = fct_reorder(Phylum, summed.NAi, .fun = 'median', .na_rm = FALSE)) %>%
+  ggplot(aes(x = summed.NAi, y = Phylum, fill = Site_Method, color = Site_Method)) +
+  geom_density_ridges(scale = 1, rel_min_height = 0.0001, alpha = 0.4) +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  scale_x_continuous(sec.axis = dup_axis(name = "")) +
+  #scale_color_viridis(discrete=TRUE) +
+  #scale_fill_viridis(discrete=TRUE) +
+  scale_color_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  scale_fill_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  #scale_x_continuous(limits = c(0, 10), expand = c(0,0)) + #Bacillaceae has one Ridge Field rep around 20, Chitinophagaceae around 10
+  labs(x = expression('%'~N~Assimilated), y = 'Phylum', caption = "") + #removed "Phylum" for ggarrange
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(color = NA),
+        plot.caption = element_text(hjust = 0),
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_text(size = 14),
+        axis.ticks = element_blank(),
+        plot.background = element_blank(),
+        legend.text = element_text(size = 12), 
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12 ),
+        axis.text.x = element_text(size = 12 ),
+        plot.margin = margin(r = 20, unit = "pt"))
+
+Phylum.ridgeplot
+
+ggsave("PubGraphs/NAi_ridgeline_Phylum.png")
+ggsave("PubGraphs/NAi_ridgeline_Phylum.svg")
+ggsave("PubGraphs/NAi_ridgeline_Phylum.pdf")
+#add sig levels later in Adobe Illustrator
+
+
+
+Phylum.EAF.ridgeplot <- EAF.t20_Phylum %>%
+  mutate(Phylum = fct_reorder(Phylum, median.EAF, .fun = 'median', .na_rm = FALSE)) %>%
+  ggplot(aes(x = median.EAF, y = Phylum, fill = Site_Method, color = Site_Method)) +
+  geom_density_ridges(scale = 1, rel_min_height = 0.0001, alpha = 0.4) +
+  scale_x_continuous(limits = c(0, 0.8), expand = c(0,0)) +
+    scale_x_continuous(sec.axis = dup_axis(name = "")) +
+  #scale_color_viridis(discrete=TRUE) +
+  scale_color_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  scale_fill_manual(
+    values = c(`Ridge Field` = "#92CA96",
+               `Ridge Lab` = "#D1A1F5",
+               `Valley Field` = "#085A12",
+               `Valley Lab` = "#7F3FD0")) +
+  # scale_fill_viridis(discrete=TRUE) +
+  labs(x = expression('Relative N Assimilation Rates 5 Days <sup>-1</sup>'), y = 'Phylum', caption = "") +
+  theme_clean() +
+  theme(legend.position = "bottom",
+        legend.background = element_rect(color = NA),
+        plot.caption = element_text(hjust = 0),
+        axis.title.y = element_text(size = 14),
+        axis.title.x = element_markdown(size = 14),
+        axis.ticks = element_blank(),
+        plot.background = element_blank(),
+        legend.text = element_text(size = 12), 
+        legend.title = element_blank(),
+        axis.text.y = element_text(size = 12 ),
+        axis.text.x = element_text(size = 12),
+        plot.margin = margin(r = 20, unit = "pt"))
+
+Phylum.EAF.ridgeplot
+
+ggsave("PubGraphs/EAF_ridgeline_Phylum.png") #purple and green saved as alt
+ggsave("PubGraphs/EAF_ridgeline_Phylum.svg")
+ggsave("PubGraphs/EAF_ridgeline_Phylum.pdf")
+
+ggarrange(Phylum.EAF.ridgeplot, Phylum.ridgeplot, labels = c("A", "B"), ncol = 1, common.legend = TRUE, legend = "bottom", align = 'hv')
+
+ggsave("PubGraphs/20Ridgeline_Median_Phylum.png")
+ggsave("PubGraphs/20Ridgeline_Median_Phylum.svg")
+
+
+
+```
